@@ -95,12 +95,20 @@ func TestExec(t *testing.T) {
 		}
 	})
 
-	t.Run("shell string rejected", func(t *testing.T) {
+	t.Run("shell string allowed", func(t *testing.T) {
 		rec := doPost(mux, "/exec", map[string]any{
 			"cmd": "echo hello | cat",
 		})
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", rec.Code)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var resp agentResponse
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if !resp.OK {
+			t.Errorf("ok = false, want true")
+		}
+		if resp.Stdout != "hello\n" {
+			t.Errorf("stdout = %q, want \"hello\\n\"", resp.Stdout)
 		}
 	})
 

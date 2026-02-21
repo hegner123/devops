@@ -161,7 +161,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "devops_exec",
-			"description": "Execute a command on the server hosting an app. Command must be a single binary name; use args for arguments.",
+			"description": "Execute a command on the server hosting an app. Supports shell syntax (pipes, redirects, paths). Simple binaries can use separate args.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

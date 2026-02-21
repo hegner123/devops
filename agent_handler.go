@@ -64,7 +64,9 @@ func handlePing(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleExec runs a single binary with arguments.
+// handleExec runs a command on the host. If cmd contains shell syntax (spaces,
+// pipes, etc.) it runs via sh -c. Otherwise it resolves the binary and passes
+// args directly.
 func handleExec(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cmd  string   `json:"cmd"`
@@ -79,27 +81,32 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// cmd must be a single binary name, not a shell string
-	if strings.ContainsAny(req.Cmd, " \t|;&$`\\\"'(){}[]<>!#~") {
-		writeError(w, http.StatusBadRequest, "cmd must be a single binary name, not a shell string")
-		return
-	}
-
-	binPath, err := exec.LookPath(req.Cmd)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("command not found: %s", req.Cmd))
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binPath, req.Args...)
+	var cmd *exec.Cmd
+	isShell := strings.ContainsAny(req.Cmd, " \t|;&$`\\\"'(){}[]<>!#~/")
+	if isShell {
+		// Shell string: run via sh -c (args appended to command string)
+		full := req.Cmd
+		for _, a := range req.Args {
+			full += " " + a
+		}
+		cmd = exec.CommandContext(ctx, "sh", "-c", full)
+	} else {
+		binPath, err := exec.LookPath(req.Cmd)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("command not found: %s", req.Cmd))
+			return
+		}
+		cmd = exec.CommandContext(ctx, binPath, req.Args...)
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
