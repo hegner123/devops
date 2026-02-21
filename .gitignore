@@ -1,0 +1,7 @@
+devops
+devops-agent
+keys/deploy_key
+*.db
+*.db-wal
+*.db-shm
+.claude/
