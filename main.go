@@ -8,6 +8,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(Version)
+		return
+	}
+
 	st, err := newStore(dbPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to open database: %v\n", err)

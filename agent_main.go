@@ -17,8 +17,16 @@ import (
 const socketPath = "/run/devops-agent/agent.sock"
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "agent" {
-		fmt.Fprintf(os.Stderr, "usage: devops agent\n")
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "usage: devops agent|version\n")
+		os.Exit(1)
+	}
+	if os.Args[1] == "version" {
+		fmt.Println(Version)
+		return
+	}
+	if os.Args[1] != "agent" {
+		fmt.Fprintf(os.Stderr, "usage: devops agent|version\n")
 		os.Exit(1)
 	}
 
