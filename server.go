@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,9 +15,16 @@ import (
 
 type server struct {
 	store *store
+	pool  *connPool
+	agent remoteAgent
+	ctx   context.Context
 }
 
 func (s *server) run() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.ctx = ctx
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -49,6 +57,10 @@ func (s *server) run() {
 		select {
 		case sig := <-sigChan:
 			fmt.Fprintf(os.Stderr, "received %v, shutting down\n", sig)
+			cancel()
+			if s.pool != nil {
+				s.pool.closeAll()
+			}
 			go func() {
 				<-sigChan
 				os.Exit(1)
@@ -58,6 +70,10 @@ func (s *server) run() {
 			return
 		case line, ok := <-lineChan:
 			if !ok {
+				cancel()
+				if s.pool != nil {
+					s.pool.closeAll()
+				}
 				wg.Wait()
 				close(responses)
 				return
@@ -154,23 +170,23 @@ func (s *server) handleToolsCall(req *jsonRPCRequest, out chan<- jsonRPCResponse
 	case "devops_update":
 		result, isError = s.devopsUpdate(params.Arguments)
 	case "devops_import":
-		result, isError = "not yet implemented (phase 4)", true
+		result, isError = s.devopsImport(params.Arguments)
 	case "devops_status":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsStatus(params.Arguments)
 	case "devops_deploy":
-		result, isError = "not yet implemented (phase 4)", true
+		result, isError = s.devopsDeploy(params.Arguments)
 	case "devops_restart":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsRestart(params.Arguments)
 	case "devops_stop":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsStop(params.Arguments)
 	case "devops_logs":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsLogs(params.Arguments)
 	case "devops_exec":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsExec(params.Arguments)
 	case "devops_health":
-		result, isError = "not yet implemented (phase 3)", true
+		result, isError = s.devopsHealth(params.Arguments)
 	case "devops_bootstrap":
-		result, isError = "not yet implemented (phase 4)", true
+		result, isError = s.devopsBootstrap(params.Arguments)
 	default:
 		out <- jsonRPCResponse{
 			JSONRPC: "2.0",

@@ -1,0 +1,13 @@
+[Unit]
+Description=devops remote agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/devops agent
+RuntimeDirectory=devops-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

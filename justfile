@@ -3,7 +3,7 @@ default:
 
 build:
     go build -o devops .
-    GOOS=linux GOARCH=amd64 go build -tags agent -o devops-agent .
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags agent -o devops-agent .
 
 test:
     go test -v -count=1 ./...
@@ -13,6 +13,10 @@ test-agent:
 
 install: build
     cp devops /usr/local/bin/devops
+
+agent-deploy HOST: build
+    scp devops-agent root@{{HOST}}:/usr/local/bin/devops.new
+    ssh root@{{HOST}} 'chmod +x /usr/local/bin/devops.new && mv /usr/local/bin/devops.new /usr/local/bin/devops && systemctl restart devops-agent'
 
 clean:
     rm -f devops devops-agent
