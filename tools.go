@@ -5,6 +5,14 @@ package main
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
+			"name":        "devops_version",
+			"description": "Print the devops MCP server version.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
 			"name":        "devops_list",
 			"description": "List all registered apps. Optionally filter by host.",
 			"inputSchema": map[string]any{

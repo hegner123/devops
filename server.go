@@ -161,6 +161,8 @@ func (s *server) handleToolsCall(req *jsonRPCRequest, out chan<- jsonRPCResponse
 	var isError bool
 
 	switch params.Name {
+	case "devops_version":
+		result, isError = Version, false
 	case "devops_list":
 		result, isError = s.devopsList(params.Arguments)
 	case "devops_add":
