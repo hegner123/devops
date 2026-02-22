@@ -4,6 +4,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +48,18 @@ CREATE TABLE IF NOT EXISTS exec_log (
     exit_code INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS command_filters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'custom',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(host, pattern)
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_filters_host ON command_filters(host);
 
 CREATE TRIGGER IF NOT EXISTS apps_updated_at
 AFTER UPDATE ON apps
@@ -108,14 +121,14 @@ func newStore(path string) (*store, error) {
 	}
 	for _, p := range pragmas {
 		if _, err := conn.Exec(p); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("set %s: %w", p, err)
+			closeErr := conn.Close()
+			return nil, errors.Join(fmt.Errorf("set %s: %w", p, err), closeErr)
 		}
 	}
 
 	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("create schema: %w", err)
+		closeErr := conn.Close()
+		return nil, errors.Join(fmt.Errorf("create schema: %w", err), closeErr)
 	}
 
 	return &store{db: conn}, nil
@@ -247,9 +260,8 @@ func (s *store) getApp(name string) (*App, error) {
 	return &a, nil
 }
 
-func (s *store) listApps(host string) ([]App, error) {
+func (s *store) listApps(host string) (_ []App, err error) {
 	var rows *sql.Rows
-	var err error
 
 	if host != "" {
 		rows, err = s.db.Query(`
@@ -269,7 +281,11 @@ func (s *store) listApps(host string) ([]App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list apps: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	var apps []App
 	for rows.Next() {
@@ -340,4 +356,80 @@ func (s *store) logExec(appName, host, command, args string, exitCode int) error
 		return fmt.Errorf("log exec: %w", err)
 	}
 	return nil
+}
+
+// CommandFilter represents a custom command filter rule.
+type CommandFilter struct {
+	ID        int64
+	Host      string
+	Pattern   string
+	Category  string
+	Reason    string
+	CreatedAt string
+}
+
+func (s *store) addFilter(host, pattern, category, reason string) error {
+	if category == "" {
+		category = "custom"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO command_filters (host, pattern, category, reason)
+		VALUES (?, ?, ?, ?)`, host, pattern, category, reason)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("filter %q already exists for host %q", pattern, host)
+		}
+		return fmt.Errorf("insert filter: %w", err)
+	}
+	return nil
+}
+
+func (s *store) listFilters(host string) (_ []CommandFilter, err error) {
+	var rows *sql.Rows
+	if host != "" {
+		rows, err = s.db.Query(`
+			SELECT id, host, pattern, category, reason, created_at
+			FROM command_filters WHERE host = ? ORDER BY host, pattern`, host)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, host, pattern, category, reason, created_at
+			FROM command_filters ORDER BY host, pattern`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list filters: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	var filters []CommandFilter
+	for rows.Next() {
+		var f CommandFilter
+		if err := rows.Scan(&f.ID, &f.Host, &f.Pattern, &f.Category, &f.Reason, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan filter: %w", err)
+		}
+		filters = append(filters, f)
+	}
+	return filters, rows.Err()
+}
+
+func (s *store) removeFilter(host, pattern string) error {
+	result, err := s.db.Exec("DELETE FROM command_filters WHERE host = ? AND pattern = ?", host, pattern)
+	if err != nil {
+		return fmt.Errorf("delete filter: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("filter %q not found for host %q", pattern, host)
+	}
+	return nil
+}
+
+func (s *store) filtersForHost(host string) ([]CommandFilter, error) {
+	return s.listFilters(host)
 }

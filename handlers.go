@@ -410,6 +410,7 @@ func (s *server) devopsDeploy(args map[string]any) (string, bool) {
 		Stdout  string `json:"stdout"`
 		Stderr  string `json:"stderr"`
 		Elapsed string `json:"elapsed"`
+		Error   string `json:"error"`
 	}
 
 	var lastChunk deployChunk
@@ -437,6 +438,15 @@ func (s *server) devopsDeploy(args map[string]any) (string, bool) {
 
 		lastChunk = chunk
 
+		if chunk.Status == "blocked" {
+			stepCount = chunk.Step
+			allOutput.WriteString(fmt.Sprintf("step %d: %s (BLOCKED)\n", chunk.Step, chunk.Cmd))
+			if chunk.Error != "" {
+				allOutput.WriteString(chunk.Error)
+				allOutput.WriteString("\n")
+			}
+		}
+
 		if chunk.Status == "done" || chunk.Status == "failed" {
 			stepCount = chunk.Step
 			allOutput.WriteString(fmt.Sprintf("step %d: %s (%s, exit %d)\n", chunk.Step, chunk.Cmd, chunk.Elapsed, chunk.Exit))
@@ -459,6 +469,14 @@ func (s *server) devopsDeploy(args map[string]any) (string, bool) {
 	output := allOutput.String()
 	if len(output) > 4096 {
 		output = output[len(output)-4096:]
+	}
+
+	if lastChunk.Status == "blocked" {
+		updateErr := s.store.updateDeployResult(name, sql.NullInt64{Valid: true, Int64: 0}, output)
+		if updateErr != nil {
+			fmt.Fprintf(os.Stderr, "update deploy result: %v\n", updateErr)
+		}
+		return fmt.Sprintf("deploy blocked at step %d (%s): %s", lastChunk.Step, lastChunk.Cmd, lastChunk.Error), true
 	}
 
 	if lastChunk.Status == "failed" {
@@ -577,7 +595,13 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 		return fmt.Sprintf("setup.sh failed (exit %d): %s", exitCode, stderr), true
 	}
 
-	// 3. Download agent binary from GitHub release
+	// 3. Write default filter config
+	defaultFilterConfig := `{"allowed_ports":[],"allow_reboot":false,"allow_shutdown":false,"custom_blocked":[]}`
+	if err := sshWriteFile(client, "/etc/devops-agent/filters.json", defaultFilterConfig); err != nil {
+		return fmt.Sprintf("write filter config: %v", err), true
+	}
+
+	// 4. Download agent binary from GitHub release
 	dlCmd := fmt.Sprintf("curl -fsSL -o /usr/local/bin/devops '%s' && chmod +x /usr/local/bin/devops", releaseURL())
 	_, stderr, exitCode, err = sshExec(client, dlCmd)
 	if err != nil {
@@ -587,7 +611,7 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 		return fmt.Sprintf("download agent failed (exit %d): %s", exitCode, stderr), true
 	}
 
-	// 4. Enable and start the agent service
+	// 5. Enable and start the agent service
 	_, stderr, exitCode, err = sshExec(client, "systemctl daemon-reload && systemctl enable --now devops-agent")
 	if err != nil {
 		return fmt.Sprintf("enable service: %v", err), true
@@ -811,4 +835,174 @@ func toInt(v any, def int) int {
 		return int(i)
 	}
 	return def
+}
+
+func boolArg(args map[string]any, key string, def bool) bool {
+	if v, ok := args[key].(bool); ok {
+		return v
+	}
+	return def
+}
+
+// Filter management handlers
+
+func (s *server) devopsFilterAdd(args map[string]any) (string, bool) {
+	host, _ := args["host"].(string)
+	pattern, _ := args["pattern"].(string)
+	if host == "" || pattern == "" {
+		return "host and pattern are required", true
+	}
+
+	category := strArg(args, "category", "custom")
+	reason := strArg(args, "reason", "")
+
+	if err := s.store.addFilter(host, pattern, category, reason); err != nil {
+		return err.Error(), true
+	}
+	return fmt.Sprintf("added filter %q for host %s", pattern, host), false
+}
+
+func (s *server) devopsFilterList(args map[string]any) (string, bool) {
+	host, _ := args["host"].(string)
+
+	filters, err := s.store.listFilters(host)
+	if err != nil {
+		return fmt.Sprintf("failed to list filters: %v", err), true
+	}
+
+	if len(filters) == 0 {
+		if host != "" {
+			return fmt.Sprintf("no filters for host %s", host), false
+		}
+		return "no filters configured", false
+	}
+
+	type filterSummary struct {
+		Host     string `json:"host"`
+		Pattern  string `json:"pattern"`
+		Category string `json:"category"`
+		Reason   string `json:"reason,omitempty"`
+	}
+
+	summaries := make([]filterSummary, len(filters))
+	for i, f := range filters {
+		summaries[i] = filterSummary{
+			Host:     f.Host,
+			Pattern:  f.Pattern,
+			Category: f.Category,
+			Reason:   f.Reason,
+		}
+	}
+
+	out, err := json.Marshal(summaries)
+	if err != nil {
+		return fmt.Sprintf("failed to marshal filters: %v", err), true
+	}
+	return string(out), false
+}
+
+func (s *server) devopsFilterRemove(args map[string]any) (string, bool) {
+	host, _ := args["host"].(string)
+	pattern, _ := args["pattern"].(string)
+	if host == "" || pattern == "" {
+		return "host and pattern are required", true
+	}
+
+	if err := s.store.removeFilter(host, pattern); err != nil {
+		return err.Error(), true
+	}
+	return fmt.Sprintf("removed filter %q from host %s", pattern, host), false
+}
+
+func (s *server) devopsFilterSync(args map[string]any) (string, bool) {
+	host, _ := args["host"].(string)
+	if host == "" {
+		return "host is required", true
+	}
+
+	// Get SSH connection: try explicit name first, then find first app on host
+	var app *App
+	if name, ok := args["name"].(string); ok && name != "" {
+		a, err := s.store.getApp(name)
+		if err != nil {
+			return err.Error(), true
+		}
+		app = a
+	} else {
+		apps, err := s.store.listApps(host)
+		if err != nil {
+			return fmt.Sprintf("failed to list apps: %v", err), true
+		}
+		if len(apps) == 0 {
+			return fmt.Sprintf("no apps registered on host %s, provide name for SSH config", host), true
+		}
+		app = &apps[0]
+	}
+
+	// Build filter config
+	filters, err := s.store.filtersForHost(host)
+	if err != nil {
+		return fmt.Sprintf("failed to get filters: %v", err), true
+	}
+
+	// Parse allowed_ports from args
+	var allowedPorts []int
+	if portsStr, ok := args["allowed_ports"].(string); ok && portsStr != "" {
+		if err := json.Unmarshal([]byte(portsStr), &allowedPorts); err != nil {
+			return fmt.Sprintf("invalid allowed_ports JSON: %v", err), true
+		}
+	}
+
+	config := struct {
+		AllowedPorts  []int `json:"allowed_ports"`
+		AllowReboot   bool  `json:"allow_reboot"`
+		AllowShutdown bool  `json:"allow_shutdown"`
+		CustomBlocked []struct {
+			Pattern  string `json:"pattern"`
+			Category string `json:"category"`
+			Reason   string `json:"reason"`
+		} `json:"custom_blocked"`
+	}{
+		AllowedPorts:  allowedPorts,
+		AllowReboot:   boolArg(args, "allow_reboot", false),
+		AllowShutdown: boolArg(args, "allow_shutdown", false),
+	}
+	if config.AllowedPorts == nil {
+		config.AllowedPorts = []int{}
+	}
+
+	for _, f := range filters {
+		config.CustomBlocked = append(config.CustomBlocked, struct {
+			Pattern  string `json:"pattern"`
+			Category string `json:"category"`
+			Reason   string `json:"reason"`
+		}{
+			Pattern:  f.Pattern,
+			Category: f.Category,
+			Reason:   f.Reason,
+		})
+	}
+	if config.CustomBlocked == nil {
+		config.CustomBlocked = make([]struct {
+			Pattern  string `json:"pattern"`
+			Category string `json:"category"`
+			Reason   string `json:"reason"`
+		}, 0)
+	}
+
+	configJSON, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("marshal config: %v", err), true
+	}
+
+	client, err := s.pool.get(s.ctx, app)
+	if err != nil {
+		return fmt.Sprintf("ssh connect: %v", err), true
+	}
+
+	if err := sshWriteFile(client, "/etc/devops-agent/filters.json", string(configJSON)); err != nil {
+		return fmt.Sprintf("write filter config: %v", err), true
+	}
+
+	return fmt.Sprintf("synced %d custom filters to %s", len(filters), host), false
 }

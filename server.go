@@ -189,6 +189,14 @@ func (s *server) handleToolsCall(req *jsonRPCRequest, out chan<- jsonRPCResponse
 		result, isError = s.devopsHealth(params.Arguments)
 	case "devops_bootstrap":
 		result, isError = s.devopsBootstrap(params.Arguments)
+	case "devops_filter_add":
+		result, isError = s.devopsFilterAdd(params.Arguments)
+	case "devops_filter_list":
+		result, isError = s.devopsFilterList(params.Arguments)
+	case "devops_filter_remove":
+		result, isError = s.devopsFilterRemove(params.Arguments)
+	case "devops_filter_sync":
+		result, isError = s.devopsFilterSync(params.Arguments)
 	default:
 		out <- jsonRPCResponse{
 			JSONRPC: "2.0",

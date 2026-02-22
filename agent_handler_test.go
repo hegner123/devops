@@ -470,6 +470,78 @@ func TestContainerJSONParsing(t *testing.T) {
 	})
 }
 
+func TestExecBlocked(t *testing.T) {
+	mux := testMux()
+
+	tests := []struct {
+		name       string
+		cmd        string
+		wantStatus int
+	}{
+		{"rm -rf /", "rm -rf /", http.StatusForbidden},
+		{"ufw disable", "ufw disable", http.StatusForbidden},
+		{"systemctl stop ssh", "systemctl stop ssh", http.StatusForbidden},
+		{"echo hello", "echo hello", http.StatusOK},
+		{"ls -la", "ls", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := doPost(mux, "/exec", map[string]any{"cmd": tt.cmd})
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestDeployBlocked(t *testing.T) {
+	mux := testMux()
+	dir := t.TempDir()
+
+	rec := doPost(mux, "/deploy", map[string]any{
+		"dir":      dir,
+		"commands": []string{"echo step1", "rm -rf /", "echo should-not-run"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n")
+	// step1 running + done = 2 lines, then rm -rf / blocked = 1 line = 3 total
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3:\n%s", len(lines), rec.Body.String())
+	}
+
+	// Last line should be "blocked"
+	var chunk map[string]any
+	json.Unmarshal([]byte(lines[2]), &chunk)
+	if chunk["status"] != "blocked" {
+		t.Errorf("last chunk status = %v, want blocked", chunk["status"])
+	}
+	if chunk["step"].(float64) != 2 {
+		t.Errorf("blocked step = %v, want 2", chunk["step"])
+	}
+}
+
+func TestFiltersEndpoint(t *testing.T) {
+	mux := testMux()
+	rec := doGet(mux, "/filters")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	resp := decodeResponse(t, rec)
+	hardBlocked, ok := resp["hard_blocked"].([]any)
+	if !ok {
+		t.Fatal("hard_blocked should be an array")
+	}
+	if len(hardBlocked) == 0 {
+		t.Error("hard_blocked should not be empty")
+	}
+}
+
 // TestUnixSocketServer verifies the agent works over a real unix socket.
 func TestUnixSocketServer(t *testing.T) {
 	dir := t.TempDir()

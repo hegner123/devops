@@ -18,6 +18,7 @@ import (
 
 func registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ping", handlePing)
+	mux.HandleFunc("GET /filters", handleFilters)
 	mux.HandleFunc("POST /exec", handleExec)
 	mux.HandleFunc("POST /service", handleService)
 	mux.HandleFunc("POST /logs", handleLogs)
@@ -81,6 +82,16 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build full command string for filter check
+	full := req.Cmd
+	for _, a := range req.Args {
+		full += " " + a
+	}
+	if err := checkCommand(full); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
@@ -88,10 +99,6 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	isShell := strings.ContainsAny(req.Cmd, " \t|;&$`\\\"'(){}[]<>!#~/")
 	if isShell {
 		// Shell string: run via sh -c (args appended to command string)
-		full := req.Cmd
-		for _, a := range req.Args {
-			full += " " + a
-		}
 		cmd = exec.CommandContext(ctx, "sh", "-c", full)
 	} else {
 		binPath, err := exec.LookPath(req.Cmd)
@@ -592,6 +599,16 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 
+		if err := checkCommand(command); err != nil {
+			writeChunk(map[string]any{
+				"step":   step,
+				"cmd":    command,
+				"status": "blocked",
+				"error":  err.Error(),
+			})
+			return
+		}
+
 		writeChunk(map[string]any{
 			"step":   step,
 			"cmd":    command,
@@ -639,4 +656,9 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"elapsed": elapsed,
 		})
 	}
+}
+
+// handleFilters returns the current active filter configuration.
+func handleFilters(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, activeFilters())
 }

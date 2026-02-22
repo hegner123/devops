@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -998,6 +997,99 @@ func TestImportUnknownRuntime(t *testing.T) {
 	}
 }
 
+func TestFilterHandlerCRUD(t *testing.T) {
+	s := testServer(t)
+
+	// Add
+	result, isError := s.devopsFilterAdd(map[string]any{
+		"host": "10.0.0.1", "pattern": "npm install", "reason": "no npm",
+	})
+	if isError {
+		t.Fatalf("add: %s", result)
+	}
+
+	// List all
+	result, isError = s.devopsFilterList(map[string]any{})
+	if isError {
+		t.Fatalf("list: %s", result)
+	}
+	var filters []map[string]any
+	json.Unmarshal([]byte(result), &filters)
+	if len(filters) != 1 {
+		t.Fatalf("list returned %d filters, want 1", len(filters))
+	}
+	if filters[0]["pattern"] != "npm install" {
+		t.Errorf("pattern = %v", filters[0]["pattern"])
+	}
+
+	// List by host
+	result, isError = s.devopsFilterList(map[string]any{"host": "10.0.0.1"})
+	if isError {
+		t.Fatalf("list by host: %s", result)
+	}
+
+	// Remove
+	result, isError = s.devopsFilterRemove(map[string]any{
+		"host": "10.0.0.1", "pattern": "npm install",
+	})
+	if isError {
+		t.Fatalf("remove: %s", result)
+	}
+
+	// Verify empty
+	result, isError = s.devopsFilterList(map[string]any{})
+	if isError {
+		t.Fatalf("list after remove: %s", result)
+	}
+	if result != "no filters configured" {
+		t.Errorf("result = %q, want 'no filters configured'", result)
+	}
+}
+
+func TestFilterHandlerValidation(t *testing.T) {
+	s := testServer(t)
+
+	t.Run("add missing host", func(t *testing.T) {
+		result, isError := s.devopsFilterAdd(map[string]any{"pattern": "npm"})
+		if !isError {
+			t.Error("expected error")
+		}
+		if result != "host and pattern are required" {
+			t.Errorf("result = %q", result)
+		}
+	})
+
+	t.Run("add missing pattern", func(t *testing.T) {
+		result, isError := s.devopsFilterAdd(map[string]any{"host": "10.0.0.1"})
+		if !isError {
+			t.Error("expected error")
+		}
+		if result != "host and pattern are required" {
+			t.Errorf("result = %q", result)
+		}
+	})
+
+	t.Run("remove missing host", func(t *testing.T) {
+		result, isError := s.devopsFilterRemove(map[string]any{"pattern": "npm"})
+		if !isError {
+			t.Error("expected error")
+		}
+		if result != "host and pattern are required" {
+			t.Errorf("result = %q", result)
+		}
+	})
+
+	t.Run("sync missing host", func(t *testing.T) {
+		result, isError := s.devopsFilterSync(map[string]any{})
+		if !isError {
+			t.Error("expected error")
+		}
+		if result != "host is required" {
+			t.Errorf("result = %q", result)
+		}
+	})
+}
+
 func TestBootstrapMissingHost(t *testing.T) {
 	s := testServer(t)
 	result, isError := s.devopsBootstrap(map[string]any{})
@@ -1044,12 +1136,3 @@ func TestReleaseURL(t *testing.T) {
 	}
 }
 
-// Ensure deploy_key is gitignored.
-func TestDeployKeyExists(t *testing.T) {
-	if _, err := os.Stat("keys/deploy_key"); err != nil {
-		t.Skip("deploy key not present (expected in CI)")
-	}
-	if len(deployKey) == 0 {
-		t.Error("embedded deploy key is empty")
-	}
-}

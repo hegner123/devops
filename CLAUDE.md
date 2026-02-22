@@ -37,12 +37,13 @@ Files with `//go:build !agent` are local-only. Files with `//go:build agent` are
 |------|---------|-----------|
 | main.go | MCP server entry point | !agent |
 | server.go | JSON-RPC loop, request routing | !agent |
-| handlers.go | All 13 tool handler implementations | !agent |
+| handlers.go | All 17 tool handler implementations | !agent |
 | db.go | SQLite schema, CRUD operations | !agent |
 | ssh.go | SSH connection pool, keepalive, embedded key + configs | !agent |
 | remote.go | HTTP-over-SSH-channel client | !agent |
 | agent_main.go | Agent entry point, unix socket listener | agent |
-| agent_handler.go | Agent HTTP endpoints (/exec, /service, /deploy, etc.) | agent |
+| agent_filter.go | Command filter logic, hard-coded + configurable patterns | agent |
+| agent_handler.go | Agent HTTP endpoints (/exec, /service, /deploy, /filters, etc.) | agent |
 | validate.go | Input validation (shared by both binaries) | none |
 | version.go | Version constant (shared) | none |
 | embed/ | Server config files (systemd, UFW, sshd, sysctl, Docker) | !agent |
@@ -50,7 +51,7 @@ Files with `//go:build !agent` are local-only. Files with `//go:build agent` are
 ## Database
 
 SQLite at `$HOME/.local/share/devops/devops.db` (override: `DEVOPS_DB_PATH` env var).
-Tables: `apps` (deployment metadata), `exec_log` (command audit trail).
+Tables: `apps` (deployment metadata), `exec_log` (command audit trail), `command_filters` (per-host command filter rules).
 Driver: `modernc.org/sqlite` (pure Go, driver name "sqlite").
 
 ## Dependencies
@@ -64,9 +65,9 @@ Driver: `modernc.org/sqlite` (pure Go, driver name "sqlite").
 claude mcp add --transport stdio devops -- /usr/local/bin/devops
 ```
 
-## Tools (13)
+## Tools (17)
 
-devops_list, devops_add, devops_import, devops_remove, devops_update, devops_status, devops_deploy, devops_restart, devops_stop, devops_logs, devops_exec, devops_health, devops_bootstrap
+devops_list, devops_add, devops_import, devops_remove, devops_update, devops_status, devops_deploy, devops_restart, devops_stop, devops_logs, devops_exec, devops_health, devops_bootstrap, devops_filter_add, devops_filter_list, devops_filter_remove, devops_filter_sync
 
 ## Testing
 

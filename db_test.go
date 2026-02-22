@@ -303,6 +303,84 @@ func TestValidationOnAdd(t *testing.T) {
 	}
 }
 
+func TestFilterCRUD(t *testing.T) {
+	s := testStore(t)
+
+	// Add filter
+	if err := s.addFilter("10.0.0.1", "npm install", "custom", "no npm on prod"); err != nil {
+		t.Fatalf("addFilter: %v", err)
+	}
+
+	// Add another filter on same host
+	if err := s.addFilter("10.0.0.1", "pip install", "custom", "no pip on prod"); err != nil {
+		t.Fatalf("addFilter second: %v", err)
+	}
+
+	// Add filter on different host
+	if err := s.addFilter("10.0.0.2", "npm install", "custom", "no npm here either"); err != nil {
+		t.Fatalf("addFilter other host: %v", err)
+	}
+
+	// List all
+	all, err := s.listFilters("")
+	if err != nil {
+		t.Fatalf("listFilters all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("len = %d, want 3", len(all))
+	}
+
+	// List by host
+	host1, err := s.listFilters("10.0.0.1")
+	if err != nil {
+		t.Fatalf("listFilters host1: %v", err)
+	}
+	if len(host1) != 2 {
+		t.Errorf("host1 len = %d, want 2", len(host1))
+	}
+
+	// Duplicate error
+	err = s.addFilter("10.0.0.1", "npm install", "custom", "duplicate")
+	if err == nil {
+		t.Fatal("expected error for duplicate filter")
+	}
+	if !contains(err.Error(), "already exists") {
+		t.Errorf("error = %q, want to contain 'already exists'", err.Error())
+	}
+
+	// Remove
+	if err := s.removeFilter("10.0.0.1", "npm install"); err != nil {
+		t.Fatalf("removeFilter: %v", err)
+	}
+
+	// Verify removed
+	host1, err = s.listFilters("10.0.0.1")
+	if err != nil {
+		t.Fatalf("listFilters after remove: %v", err)
+	}
+	if len(host1) != 1 {
+		t.Errorf("host1 after remove len = %d, want 1", len(host1))
+	}
+
+	// Remove non-existent
+	err = s.removeFilter("10.0.0.1", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent filter")
+	}
+
+	// filtersForHost
+	host2, err := s.filtersForHost("10.0.0.2")
+	if err != nil {
+		t.Fatalf("filtersForHost: %v", err)
+	}
+	if len(host2) != 1 {
+		t.Errorf("host2 len = %d, want 1", len(host2))
+	}
+	if host2[0].Pattern != "npm install" {
+		t.Errorf("pattern = %q, want 'npm install'", host2[0].Pattern)
+	}
+}
+
 func TestDBPathEnvOverride(t *testing.T) {
 	t.Setenv("DEVOPS_DB_PATH", "/tmp/test-devops.db")
 	p := dbPath()
