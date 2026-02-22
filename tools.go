@@ -169,13 +169,12 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "devops_exec",
-			"description": "Execute a command on the server hosting an app. Supports shell syntax (pipes, redirects, paths). Simple binaries can use separate args.",
+			"description": "Run a shell command on the host via the persistent SSH tunnel. Full shell syntax supported (pipes, redirects, semicolons, subshells). The command is executed as-is via sh -c on the remote host.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":    prop("string", "App name"),
-					"command": prop("string", "Binary name to execute"),
-					"args":    prop("array", "Command arguments"),
+					"name":    prop("string", "App name (used to resolve host and SSH connection)"),
+					"command": prop("string", "Shell command to execute"),
 				},
 				"required": []string{"name", "command"},
 			},

@@ -414,7 +414,7 @@ func TestMockAgentIntegration(t *testing.T) {
 
 	t.Run("exec", func(t *testing.T) {
 		resp, err := client.call(context.Background(), nil, "/exec", map[string]any{
-			"cmd": "df", "args": []string{"-h"},
+			"cmd": "df -h",
 		})
 		if err != nil {
 			t.Fatalf("call: %v", err)
@@ -443,7 +443,7 @@ func TestMockAgentIntegration(t *testing.T) {
 	})
 
 	t.Run("exec_log recording", func(t *testing.T) {
-		err := st.logExec("myapp", "10.0.0.1", "df", `["-h"]`, 0)
+		err := st.logExec("myapp", "10.0.0.1", "df -h", "", 0)
 		if err != nil {
 			t.Fatalf("logExec: %v", err)
 		}

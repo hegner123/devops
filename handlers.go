@@ -301,21 +301,8 @@ func (s *server) devopsExec(args map[string]any) (string, bool) {
 		return err.Error(), true
 	}
 
-	// Build args list
-	var execArgs []string
-	if rawArgs, ok := args["args"]; ok {
-		if arr, ok := rawArgs.([]any); ok {
-			for _, a := range arr {
-				if s, ok := a.(string); ok {
-					execArgs = append(execArgs, s)
-				}
-			}
-		}
-	}
-
 	resp, err := s.agent.call(s.ctx, app, "/exec", map[string]any{
-		"cmd":  command,
-		"args": execArgs,
+		"cmd": command,
 	})
 	if err != nil {
 		return fmt.Sprintf("agent error: %v", err), true
@@ -326,8 +313,7 @@ func (s *server) devopsExec(args map[string]any) (string, bool) {
 	if resp.Exit != nil {
 		exitCode = *resp.Exit
 	}
-	argsJSON, _ := json.Marshal(execArgs)
-	if logErr := s.store.logExec(app.Name, app.Host, command, string(argsJSON), exitCode); logErr != nil {
+	if logErr := s.store.logExec(app.Name, app.Host, command, "", exitCode); logErr != nil {
 		fmt.Fprintf(os.Stderr, "log exec: %v\n", logErr)
 	}
 
