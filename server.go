@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"syscall"
 )
 
 type server struct {
@@ -26,7 +25,7 @@ func (s *server) run() {
 	s.ctx = ctx
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, platformSignals()...)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,12 +21,6 @@ import (
 
 //go:embed embed/*
 var serverFiles embed.FS
-
-// defaultKeyPaths are checked in order when no per-app key_path is set.
-var defaultKeyPaths = []string{
-	filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519"),
-	filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"),
-}
 
 const defaultKeyCacheKey = "__default__"
 
@@ -130,14 +123,14 @@ func (p *connPool) signerForApp(app *App) (ssh.Signer, error) {
 	}
 
 	// Try default key paths
-	for _, path := range defaultKeyPaths {
+	for _, path := range getDefaultKeyPaths() {
 		signer, err := p.loadAndCacheKey(path, cacheKey)
 		if err == nil {
 			return signer, nil
 		}
 	}
 
-	return nil, fmt.Errorf("no SSH key found: provide key_path per app or place a key at ~/.ssh/id_ed25519 or ~/.ssh/id_rsa")
+	return nil, fmt.Errorf("no SSH key found: set key_path per app or place a key in your .ssh directory (id_ed25519 or id_rsa)")
 }
 
 func (p *connPool) loadAndCacheKey(path, cacheKey string) (ssh.Signer, error) {

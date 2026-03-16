@@ -5,6 +5,11 @@ build:
     go build -o devops .
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags agent -o devops-agent .
 
+build-windows:
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o devops.exe .
+
+build-all: build build-windows
+
 test:
     go test -v -count=1 ./...
 

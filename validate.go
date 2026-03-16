@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 )
 
 func validateServiceName(s string) error {
@@ -123,6 +124,25 @@ func validatePath(s string) error {
 		return fmt.Errorf("path exceeds 4096 characters")
 	}
 	if s[0] != '/' {
+		return fmt.Errorf("path must be absolute")
+	}
+	for _, r := range s {
+		if r == 0 {
+			return fmt.Errorf("path contains null byte")
+		}
+	}
+	return nil
+}
+
+// validateLocalPath validates a path on the local machine (accepts both Unix and Windows absolute paths).
+func validateLocalPath(s string) error {
+	if s == "" {
+		return fmt.Errorf("path is required")
+	}
+	if len(s) > 4096 {
+		return fmt.Errorf("path exceeds 4096 characters")
+	}
+	if !filepath.IsAbs(s) {
 		return fmt.Errorf("path must be absolute")
 	}
 	for _, r := range s {

@@ -13,34 +13,13 @@ import (
 	"testing"
 )
 
-// mockAgent starts a unix socket HTTP server that mimics the remote agent.
-func mockAgent(t *testing.T, handler http.Handler) string {
-	t.Helper()
-	dir := t.TempDir()
-	sock := filepath.Join(dir, "agent.sock")
-
-	listener, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-
-	srv := &http.Server{Handler: handler}
-	go srv.Serve(listener)
-	t.Cleanup(func() {
-		srv.Close()
-		listener.Close()
-	})
-
-	return sock
-}
-
-// directAgentClient connects to a local unix socket, bypassing SSH for testing.
+// directAgentClient connects to a mock agent, bypassing SSH for testing.
 type directAgentClient struct {
 	sockPath string
 }
 
 func (d *directAgentClient) call(ctx context.Context, app *App, endpoint string, req any) (*AgentResponse, error) {
-	conn, err := net.Dial("unix", d.sockPath)
+	conn, err := dialMockAgent(d.sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial mock agent: %w", err)
 	}
@@ -80,7 +59,7 @@ func (d *directAgentClient) call(ctx context.Context, app *App, endpoint string,
 }
 
 func (d *directAgentClient) callStream(ctx context.Context, app *App, endpoint string, req any) (io.ReadCloser, error) {
-	conn, err := net.Dial("unix", d.sockPath)
+	conn, err := dialMockAgent(d.sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial mock agent: %w", err)
 	}

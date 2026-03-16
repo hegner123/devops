@@ -27,6 +27,11 @@ jobs:
             binary: devops
             tags: ""
             asset: devops-darwin-amd64
+          - goos: windows
+            goarch: amd64
+            binary: devops.exe
+            tags: ""
+            asset: devops-windows-amd64.exe
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,3 +72,4 @@ jobs:
             devops-linux-amd64
             devops-darwin-arm64
             devops-darwin-amd64
+            devops-windows-amd64.exe

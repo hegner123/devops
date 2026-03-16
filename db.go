@@ -142,11 +142,7 @@ func dbPath() string {
 	if p := os.Getenv("DEVOPS_DB_PATH"); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "devops.db"
-	}
-	return filepath.Join(home, ".local", "share", "devops", "devops.db")
+	return filepath.Join(dataDir(), "devops.db")
 }
 
 // validateApp checks all fields that touch shell commands or SSH parameters.
@@ -193,7 +189,7 @@ func validateApp(a *App) error {
 		}
 	}
 	if a.KeyPath != "" {
-		if err := validatePath(a.KeyPath); err != nil {
+		if err := validateLocalPath(a.KeyPath); err != nil {
 			return fmt.Errorf("key_path: %w", err)
 		}
 	}

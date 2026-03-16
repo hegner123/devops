@@ -4,7 +4,6 @@ package main
 
 import (
 	"database/sql"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -382,10 +381,10 @@ func TestFilterCRUD(t *testing.T) {
 }
 
 func TestDBPathEnvOverride(t *testing.T) {
-	t.Setenv("DEVOPS_DB_PATH", "/tmp/test-devops.db")
+	want := filepath.Join(t.TempDir(), "test-devops.db")
+	t.Setenv("DEVOPS_DB_PATH", want)
 	p := dbPath()
-	if p != "/tmp/test-devops.db" {
-		t.Errorf("dbPath = %q, want /tmp/test-devops.db", p)
+	if p != want {
+		t.Errorf("dbPath = %q, want %q", p, want)
 	}
-	os.Unsetenv("DEVOPS_DB_PATH")
 }
