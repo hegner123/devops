@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,11 +20,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-//go:embed keys/deploy_key
-var deployKey []byte
-
 //go:embed embed/*
 var serverFiles embed.FS
+
+// defaultKeyPaths are checked in order when no per-app key_path is set.
+var defaultKeyPaths = []string{
+	filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519"),
+	filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"),
+}
+
+const defaultKeyCacheKey = "__default__"
 
 type connEntry struct {
 	client *ssh.Client
@@ -33,20 +39,14 @@ type connEntry struct {
 type connPool struct {
 	mu       sync.Mutex
 	conns    map[string]*connEntry
-	key      ssh.Signer
 	hostKeys map[string]ssh.Signer // per-host key cache (keyed by file path)
 }
 
-func newConnPool() (*connPool, error) {
-	signer, err := ssh.ParsePrivateKey(deployKey)
-	if err != nil {
-		return nil, fmt.Errorf("parse embedded deploy key: %w", err)
-	}
+func newConnPool() *connPool {
 	return &connPool{
 		conns:    make(map[string]*connEntry),
-		key:      signer,
 		hostKeys: make(map[string]ssh.Signer),
-	}, nil
+	}
 }
 
 func poolKey(user, host string, port int) string {
@@ -115,26 +115,43 @@ func (p *connPool) get(ctx context.Context, app *App) (*ssh.Client, error) {
 }
 
 func (p *connPool) signerForApp(app *App) (ssh.Signer, error) {
-	if app.KeyPath == "" {
-		return p.key, nil
+	cacheKey := app.KeyPath
+	if cacheKey == "" {
+		cacheKey = defaultKeyCacheKey
 	}
 
 	// Check cache
-	if signer, ok := p.hostKeys[app.KeyPath]; ok {
+	if signer, ok := p.hostKeys[cacheKey]; ok {
 		return signer, nil
 	}
 
-	data, err := os.ReadFile(app.KeyPath)
+	if app.KeyPath != "" {
+		return p.loadAndCacheKey(app.KeyPath, cacheKey)
+	}
+
+	// Try default key paths
+	for _, path := range defaultKeyPaths {
+		signer, err := p.loadAndCacheKey(path, cacheKey)
+		if err == nil {
+			return signer, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no SSH key found: provide key_path per app or place a key at ~/.ssh/id_ed25519 or ~/.ssh/id_rsa")
+}
+
+func (p *connPool) loadAndCacheKey(path, cacheKey string) (ssh.Signer, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read key %s: %w", app.KeyPath, err)
+		return nil, fmt.Errorf("read key %s: %w", path, err)
 	}
 
 	signer, err := ssh.ParsePrivateKey(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse key %s: %w", app.KeyPath, err)
+		return nil, fmt.Errorf("parse key %s: %w", path, err)
 	}
 
-	p.hostKeys[app.KeyPath] = signer
+	p.hostKeys[cacheKey] = signer
 	return signer, nil
 }
 

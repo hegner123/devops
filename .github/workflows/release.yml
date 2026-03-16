@@ -34,8 +34,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Create dummy deploy key for build
-        run: mkdir -p keys && ssh-keygen -t ed25519 -f keys/deploy_key -N "" -q
       - name: Build
         env:
           CGO_ENABLED: "0"

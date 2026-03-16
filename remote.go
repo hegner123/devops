@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -156,7 +157,7 @@ func (s *streamReader) Read(p []byte) (int, error) {
 }
 
 func (s *streamReader) Close() error {
-	err := s.body.Close()
-	s.conn.Close()
-	return err
+	bodyErr := s.body.Close()
+	connErr := s.conn.Close()
+	return errors.Join(bodyErr, connErr)
 }

@@ -15,8 +15,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Create dummy deploy key for build
-        run: mkdir -p keys && ssh-keygen -t ed25519 -f keys/deploy_key -N "" -q
       - name: Run tests
         run: go test -v -count=1 ./...
       - name: Run agent tests

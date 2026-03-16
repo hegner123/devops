@@ -20,11 +20,7 @@ func main() {
 	}
 	defer st.close()
 
-	pool, err := newConnPool()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize SSH pool: %v\n", err)
-		os.Exit(1)
-	}
+	pool := newConnPool()
 
 	s := &server{
 		store: st,
