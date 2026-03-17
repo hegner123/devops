@@ -176,6 +176,24 @@ func (s *server) devopsUpdate(args map[string]any) (string, bool) {
 	return fmt.Sprintf("updated app %q", name), false
 }
 
+// validateAppConfig checks that an app has the required fields for agent communication.
+// If requireCompose is true, it also checks that docker-runtime apps have a compose_file.
+func validateAppConfig(app *App, requireCompose bool) error {
+	if app.Host == "" {
+		return fmt.Errorf("host is not set — run devops_update to configure")
+	}
+	if app.ServiceName == "" {
+		return fmt.Errorf("service_name is not set — run devops_update to configure")
+	}
+	if app.Runtime == "" {
+		return fmt.Errorf("runtime is not set — run devops_update with runtime='docker' or 'systemd'")
+	}
+	if requireCompose && app.Runtime == "docker" && app.ComposeFile == "" {
+		return fmt.Errorf("compose_file is required for docker runtime — run devops_update to set it")
+	}
+	return nil
+}
+
 // Phase 3: remote agent handlers
 
 func (s *server) devopsStatus(args map[string]any) (string, bool) {
@@ -186,7 +204,11 @@ func (s *server) devopsStatus(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
+	}
+
+	if err := validateAppConfig(app, true); err != nil {
+		return fmt.Sprintf("app %q config error: %v", name, err), true
 	}
 
 	resp, err := s.agent.call(s.ctx, app, "/service", map[string]any{
@@ -196,10 +218,17 @@ func (s *server) devopsStatus(args map[string]any) (string, bool) {
 		"compose_file": app.ComposeFile,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s status failed (host=%s, svc=%s): %v", name, app.Host, app.ServiceName, err), true
 	}
 	if !resp.OK {
-		return fmt.Sprintf("status failed: %s", resp.Error), true
+		detail := resp.Error
+		if detail == "" {
+			detail = resp.Stderr
+		}
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("%s status failed (host=%s, svc=%s, rt=%s): %s", name, app.Host, app.ServiceName, app.Runtime, detail), true
 	}
 
 	out, err := json.Marshal(resp.Data)
@@ -217,7 +246,11 @@ func (s *server) devopsRestart(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
+	}
+
+	if err := validateAppConfig(app, true); err != nil {
+		return fmt.Sprintf("app %q config error: %v", name, err), true
 	}
 
 	resp, err := s.agent.call(s.ctx, app, "/service", map[string]any{
@@ -227,10 +260,17 @@ func (s *server) devopsRestart(args map[string]any) (string, bool) {
 		"compose_file": app.ComposeFile,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s restart failed (host=%s, svc=%s): %v", name, app.Host, app.ServiceName, err), true
 	}
 	if !resp.OK {
-		return fmt.Sprintf("restart failed: %s", resp.Error), true
+		detail := resp.Error
+		if detail == "" {
+			detail = resp.Stderr
+		}
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("%s restart failed (host=%s, svc=%s, rt=%s): %s", name, app.Host, app.ServiceName, app.Runtime, detail), true
 	}
 	return fmt.Sprintf("restarted %s on %s", app.ServiceName, app.Host), false
 }
@@ -243,7 +283,11 @@ func (s *server) devopsStop(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
+	}
+
+	if err := validateAppConfig(app, true); err != nil {
+		return fmt.Sprintf("app %q config error: %v", name, err), true
 	}
 
 	resp, err := s.agent.call(s.ctx, app, "/service", map[string]any{
@@ -253,10 +297,17 @@ func (s *server) devopsStop(args map[string]any) (string, bool) {
 		"compose_file": app.ComposeFile,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s stop failed (host=%s, svc=%s): %v", name, app.Host, app.ServiceName, err), true
 	}
 	if !resp.OK {
-		return fmt.Sprintf("stop failed: %s", resp.Error), true
+		detail := resp.Error
+		if detail == "" {
+			detail = resp.Stderr
+		}
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("%s stop failed (host=%s, svc=%s, rt=%s): %s", name, app.Host, app.ServiceName, app.Runtime, detail), true
 	}
 	return fmt.Sprintf("stopped %s on %s", app.ServiceName, app.Host), false
 }
@@ -269,7 +320,11 @@ func (s *server) devopsLogs(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
+	}
+
+	if err := validateAppConfig(app, app.Runtime == "docker"); err != nil {
+		return fmt.Sprintf("app %q config error: %v", name, err), true
 	}
 
 	lines := intArg(args, "lines", 50)
@@ -281,10 +336,17 @@ func (s *server) devopsLogs(args map[string]any) (string, bool) {
 		"compose_file": app.ComposeFile,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s logs failed (host=%s, svc=%s): %v", name, app.Host, app.ServiceName, err), true
 	}
 	if !resp.OK {
-		return fmt.Sprintf("logs failed: %s", resp.Error), true
+		detail := resp.Error
+		if detail == "" {
+			detail = resp.Output
+		}
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("%s logs failed (host=%s, svc=%s, rt=%s): %s", name, app.Host, app.ServiceName, app.Runtime, detail), true
 	}
 	return resp.Output, false
 }
@@ -298,14 +360,18 @@ func (s *server) devopsExec(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
+	}
+
+	if app.Host == "" {
+		return fmt.Sprintf("app %q has no host configured — run devops_update to set it", name), true
 	}
 
 	resp, err := s.agent.call(s.ctx, app, "/exec", map[string]any{
 		"cmd": command,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s exec failed (host=%s): %v", name, app.Host, err), true
 	}
 
 	// Log to exec_log
@@ -335,18 +401,22 @@ func (s *server) devopsHealth(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
 	}
 
 	if app.HealthCheckURL == "" {
-		return "no health_check_url configured for this app", true
+		return fmt.Sprintf("app %q has no health_check_url configured — run devops_update to set it", name), true
+	}
+
+	if app.Host == "" {
+		return fmt.Sprintf("app %q has no host configured — run devops_update to set it", name), true
 	}
 
 	resp, err := s.agent.call(s.ctx, app, "/health", map[string]any{
 		"url": app.HealthCheckURL,
 	})
 	if err != nil {
-		return fmt.Sprintf("agent error: %v", err), true
+		return fmt.Sprintf("%s health check failed (host=%s, url=%s): %v", name, app.Host, app.HealthCheckURL, err), true
 	}
 
 	out, err := json.Marshal(resp)
@@ -366,7 +436,7 @@ func (s *server) devopsDeploy(args map[string]any) (string, bool) {
 
 	app, err := s.store.getApp(name)
 	if err != nil {
-		return err.Error(), true
+		return fmt.Sprintf("app %q not found: %v", name, err), true
 	}
 
 	// Get commands: override or from DB
@@ -389,7 +459,7 @@ func (s *server) devopsDeploy(args map[string]any) (string, bool) {
 	}
 
 	if app.DeployDir == "" {
-		return "deploy_dir is not configured for this app", true
+		return fmt.Sprintf("app %q has no deploy_dir configured — run devops_update to set it", name), true
 	}
 
 	stream, err := s.agent.callStream(s.ctx, app, "/deploy", map[string]any{
@@ -687,7 +757,11 @@ func (s *server) devopsImport(args map[string]any) (string, bool) {
 		return fmt.Sprintf("agent error: %v", err), true
 	}
 	if !resp.OK {
-		return fmt.Sprintf("discover failed: %s", resp.Error), true
+		detail := resp.Error
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("discover failed for %s on %s (dir=%s): %s", name, host, deployDir, detail), true
 	}
 
 	// Parse discovery data

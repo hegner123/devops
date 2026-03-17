@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -243,7 +244,7 @@ func TestHandlerHealthNoURL(t *testing.T) {
 	if !isError {
 		t.Error("expected error for missing health_check_url")
 	}
-	if result != "no health_check_url configured for this app" {
+	if !strings.Contains(result, "no health_check_url configured") {
 		t.Errorf("result = %q", result)
 	}
 }
@@ -717,7 +718,7 @@ func TestDeployMissingParams(t *testing.T) {
 		if !isError {
 			t.Error("expected error")
 		}
-		if result != "deploy_dir is not configured for this app" {
+		if !strings.Contains(result, "no deploy_dir configured") {
 			t.Errorf("result = %q", result)
 		}
 	})

@@ -211,15 +211,23 @@ func handleService(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode := exitErr.ExitCode()
+			errMsg := stderr.String()
+			if errMsg == "" {
+				errMsg = stdout.String()
+			}
+			if errMsg == "" {
+				errMsg = fmt.Sprintf("%s %s %s exited %d", req.Runtime, req.Action, req.Name, exitCode)
+			}
 			writeJSON(w, http.StatusOK, agentResponse{
 				OK:     false,
+				Error:  errMsg,
 				Stdout: stdout.String(),
 				Stderr: stderr.String(),
 				Exit:   &exitCode,
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("exec failed: %v", err))
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("%s %s %s: %v", req.Runtime, req.Action, req.Name, err))
 		return
 	}
 
