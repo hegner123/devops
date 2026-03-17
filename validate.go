@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 func validateServiceName(s string) error {
@@ -130,6 +131,14 @@ func validatePath(s string) error {
 		if r == 0 {
 			return fmt.Errorf("path contains null byte")
 		}
+	}
+	// Canonicalize and verify the cleaned path
+	cleaned := filepath.Clean(s)
+	if cleaned[0] != '/' {
+		return fmt.Errorf("path must be absolute after canonicalization")
+	}
+	if strings.Contains(cleaned, "..") {
+		return fmt.Errorf("path contains disallowed '..' component")
 	}
 	return nil
 }

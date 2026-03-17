@@ -1115,4 +1115,3 @@ func TestReleaseURL(t *testing.T) {
 		t.Errorf("url = %q, want to contain devops-linux-amd64", url)
 	}
 }
-

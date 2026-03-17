@@ -68,7 +68,26 @@ func main() {
 	mux := http.NewServeMux()
 	registerHandlers(mux)
 
-	srv := &http.Server{Handler: mux}
+	// Limit to 10 concurrent requests
+	sem := make(chan struct{}, 10)
+	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+			mux.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"ok":false,"error":"too many concurrent requests"}`))
+		}
+	})
+
+	srv := &http.Server{
+		Handler:      limited,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 35 * time.Minute, // must exceed deploy timeout (30m)
+		IdleTimeout:  60 * time.Second,
+	}
 
 	go func() {
 		<-ctx.Done()

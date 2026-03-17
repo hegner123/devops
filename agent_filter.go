@@ -143,38 +143,96 @@ func checkCommand(cmd string) error {
 	return nil
 }
 
-// isDestructiveRm detects rm -rf / and rm -rf /* without matching rm -rf /opt/app.
+// isDestructiveRm detects rm with both recursive and force flags targeting root.
+// Handles all flag forms: -rf, -r -f, -f -r, --recursive --force, --force --recursive,
+// and mixed forms like -r --force or --recursive -f.
 func isDestructiveRm(lower string) bool {
-	// Check for "rm -rf /*"
-	if strings.Contains(lower, "rm -rf /*") {
-		return true
-	}
-
-	// Check for "rm -rf /" where / is targeting root
-	idx := 0
-	for {
-		pos := strings.Index(lower[idx:], "rm -rf /")
-		if pos == -1 {
-			break
-		}
-		pos += idx
-		afterSlash := pos + len("rm -rf /")
-		if afterSlash >= len(lower) {
-			// "rm -rf /" at end of string -- root targeted
-			return true
-		}
-		ch := lower[afterSlash]
-		// If the character after / is a path component (letter, dot, digit, underscore),
-		// then it's targeting a specific path like /opt/app, not root
-		if isPathChar(ch) {
-			idx = afterSlash
+	// Find all "rm" tokens in the command (handles pipes, semicolons, etc.)
+	// Split by common shell separators to isolate individual commands.
+	commands := splitShellCommands(lower)
+	for _, cmd := range commands {
+		cmd = strings.TrimSpace(cmd)
+		fields := strings.Fields(cmd)
+		if len(fields) < 2 {
 			continue
 		}
-		// Characters like space, tab, semicolon, pipe, ampersand, newline, star
-		// indicate root is being targeted
-		return true
+		if fields[0] != "rm" {
+			continue
+		}
+
+		hasRecursive := false
+		hasForce := false
+		var targets []string
+
+		for _, f := range fields[1:] {
+			if f == "--recursive" {
+				hasRecursive = true
+				continue
+			}
+			if f == "--force" {
+				hasForce = true
+				continue
+			}
+			if f == "--" {
+				// Everything after -- is a target
+				continue
+			}
+			if len(f) > 1 && f[0] == '-' && f[1] != '-' {
+				// Short flags like -rf, -r, -f, -fr
+				for _, ch := range f[1:] {
+					switch ch {
+					case 'r', 'R':
+						hasRecursive = true
+					case 'f':
+						hasForce = true
+					}
+				}
+				continue
+			}
+			// Not a flag — it's a target path
+			targets = append(targets, f)
+		}
+
+		if !hasRecursive || !hasForce {
+			continue
+		}
+
+		for _, t := range targets {
+			if t == "/" || t == "/*" {
+				return true
+			}
+		}
 	}
 	return false
+}
+
+// splitShellCommands splits a command line by shell separators (;, &&, ||, |)
+// to isolate individual commands for analysis.
+func splitShellCommands(s string) []string {
+	var result []string
+	current := strings.Builder{}
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if ch == ';' || ch == '|' || ch == '&' {
+			if current.Len() > 0 {
+				result = append(result, current.String())
+				current.Reset()
+			}
+			// Skip doubled operators (&&, ||)
+			if i+1 < len(s) && s[i+1] == ch {
+				i++
+			}
+			i++
+			continue
+		}
+		current.WriteByte(ch)
+		i++
+	}
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	return result
 }
 
 func isPathChar(ch byte) bool {
@@ -185,6 +243,7 @@ func isPathChar(ch byte) bool {
 }
 
 // loadFilterConfig reads the JSON config from disk. Returns empty config if missing.
+// Logs a warning to stderr if the file exists but contains malformed JSON.
 func loadFilterConfig() FilterConfig {
 	data, err := os.ReadFile(filterConfigPath)
 	if err != nil {
@@ -192,6 +251,7 @@ func loadFilterConfig() FilterConfig {
 	}
 	var config FilterConfig
 	if err := json.Unmarshal(data, &config); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: filter config %s exists but is malformed JSON: %v (falling back to empty config)\n", filterConfigPath, err)
 		return FilterConfig{}
 	}
 	return config
@@ -256,10 +316,10 @@ func activeFilters() map[string]any {
 	config := loadFilterConfig()
 
 	return map[string]any{
-		"hard_blocked":   hardBlocked,
-		"configurable":   configurable,
-		"port_patterns":  portPatterns,
-		"config":         config,
-		"rm_root_check":  true,
+		"hard_blocked":  hardBlocked,
+		"configurable":  configurable,
+		"port_patterns": portPatterns,
+		"config":        config,
+		"rm_root_check": true,
 	}
 }

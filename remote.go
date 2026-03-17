@@ -15,6 +15,16 @@ import (
 
 const agentSocket = "/run/devops-agent/agent.sock"
 
+// connectError wraps errors that occur during connection establishment
+// (SSH pool.get or client.Dial), before any request is sent. Only these
+// errors are safe to retry for non-idempotent operations.
+type connectError struct {
+	err error
+}
+
+func (e *connectError) Error() string { return e.err.Error() }
+func (e *connectError) Unwrap() error { return e.err }
+
 // remoteAgent defines the interface for communicating with the remote agent.
 type remoteAgent interface {
 	call(ctx context.Context, app *App, endpoint string, req any) (*AgentResponse, error)
@@ -41,8 +51,13 @@ type agentClient struct {
 func (a *agentClient) call(ctx context.Context, app *App, endpoint string, req any) (*AgentResponse, error) {
 	resp, err := a.doCall(ctx, app, endpoint, req, 30*time.Second)
 	if err != nil {
-		// Retry once: pool.get handles invalidation and redialing
-		resp, err = a.doCall(ctx, app, endpoint, req, 30*time.Second)
+		// Only retry on connection-phase errors (before the request was sent).
+		// Post-send errors (httpClient.Do, JSON decode) are not retried because
+		// the remote may have already processed the request.
+		var ce *connectError
+		if errors.As(err, &ce) {
+			resp, err = a.doCall(ctx, app, endpoint, req, 30*time.Second)
+		}
 	}
 	return resp, err
 }
@@ -50,12 +65,12 @@ func (a *agentClient) call(ctx context.Context, app *App, endpoint string, req a
 func (a *agentClient) doCall(ctx context.Context, app *App, endpoint string, reqBody any, timeout time.Duration) (*AgentResponse, error) {
 	client, err := a.pool.get(ctx, app)
 	if err != nil {
-		return nil, fmt.Errorf("ssh connect: %w", err)
+		return nil, &connectError{err: fmt.Errorf("ssh connect: %w", err)}
 	}
 
 	conn, err := client.Dial("unix", agentSocket)
 	if err != nil {
-		return nil, fmt.Errorf("dial agent socket: %w", err)
+		return nil, &connectError{err: fmt.Errorf("dial agent socket: %w", err)}
 	}
 	defer conn.Close()
 
@@ -97,8 +112,11 @@ func (a *agentClient) doCall(ctx context.Context, app *App, endpoint string, req
 func (a *agentClient) callStream(ctx context.Context, app *App, endpoint string, reqBody any) (io.ReadCloser, error) {
 	reader, err := a.doCallStream(ctx, app, endpoint, reqBody)
 	if err != nil {
-		// Retry once
-		reader, err = a.doCallStream(ctx, app, endpoint, reqBody)
+		// Only retry on connection-phase errors (before the request was sent).
+		var ce *connectError
+		if errors.As(err, &ce) {
+			reader, err = a.doCallStream(ctx, app, endpoint, reqBody)
+		}
 	}
 	return reader, err
 }
@@ -106,12 +124,12 @@ func (a *agentClient) callStream(ctx context.Context, app *App, endpoint string,
 func (a *agentClient) doCallStream(ctx context.Context, app *App, endpoint string, reqBody any) (io.ReadCloser, error) {
 	client, err := a.pool.get(ctx, app)
 	if err != nil {
-		return nil, fmt.Errorf("ssh connect: %w", err)
+		return nil, &connectError{err: fmt.Errorf("ssh connect: %w", err)}
 	}
 
 	conn, err := client.Dial("unix", agentSocket)
 	if err != nil {
-		return nil, fmt.Errorf("dial agent socket: %w", err)
+		return nil, &connectError{err: fmt.Errorf("dial agent socket: %w", err)}
 	}
 
 	pr, pw := io.Pipe()

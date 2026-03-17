@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -33,12 +34,12 @@ func (s *server) devopsList(args map[string]any) (string, bool) {
 	}
 
 	type appSummary struct {
-		Name    string `json:"name"`
-		Host    string `json:"host"`
-		Svc     string `json:"svc"`
-		RT      string `json:"rt"`
-		Deploy  string `json:"deploy,omitempty"`
-		Status  string `json:"status,omitempty"`
+		Name   string `json:"name"`
+		Host   string `json:"host"`
+		Svc    string `json:"svc"`
+		RT     string `json:"rt"`
+		Deploy string `json:"deploy,omitempty"`
+		Status string `json:"status,omitempty"`
 	}
 
 	summaries := make([]appSummary, len(apps))
@@ -79,21 +80,21 @@ func (s *server) devopsAdd(args map[string]any) (string, bool) {
 	}
 
 	app := &App{
-		Name:        name,
-		Host:        host,
-		Port:        intArg(args, "port", 22),
-		User:        strArg(args, "user", "root"),
-		Runtime:     strArg(args, "runtime", "docker"),
-		ServiceName: serviceName,
-		ComposeFile: strArg(args, "compose_file", ""),
-		RepoURL:     strArg(args, "repo_url", ""),
-		Branch:      strArg(args, "branch", "main"),
-		DeployDir:   strArg(args, "deploy_dir", ""),
-		BinaryPath:  strArg(args, "binary_path", ""),
+		Name:           name,
+		Host:           host,
+		Port:           intArg(args, "port", 22),
+		User:           strArg(args, "user", "root"),
+		Runtime:        strArg(args, "runtime", "docker"),
+		ServiceName:    serviceName,
+		ComposeFile:    strArg(args, "compose_file", ""),
+		RepoURL:        strArg(args, "repo_url", ""),
+		Branch:         strArg(args, "branch", "main"),
+		DeployDir:      strArg(args, "deploy_dir", ""),
+		BinaryPath:     strArg(args, "binary_path", ""),
 		HealthCheckURL: strArg(args, "health_check_url", ""),
 		DeployCommands: strArg(args, "deploy_commands", "[]"),
-		Notes:       strArg(args, "notes", ""),
-		KeyPath:     strArg(args, "key_path", ""),
+		Notes:          strArg(args, "notes", ""),
+		KeyPath:        strArg(args, "key_path", ""),
 	}
 
 	if err := s.store.addApp(app); err != nil {
@@ -416,7 +417,9 @@ func (s *server) devopsHealth(args map[string]any) (string, bool) {
 		"url": app.HealthCheckURL,
 	})
 	if err != nil {
-		return fmt.Sprintf("%s health check failed (host=%s, url=%s): %v", name, app.Host, app.HealthCheckURL, err), true
+		// Strip query parameters from URL in error output — they may contain tokens/secrets
+		safeURL := stripQueryParams(app.HealthCheckURL)
+		return fmt.Sprintf("%s health check failed (host=%s, url=%s): %v", name, app.Host, safeURL, err), true
 	}
 
 	out, err := json.Marshal(resp)
@@ -602,6 +605,17 @@ func (s *server) devopsBootstrap(args map[string]any) (string, bool) {
 	port := intArg(args, "port", 22)
 	keyPath := strArg(args, "key_path", "")
 
+	// Validate SSH connection parameters before use
+	if err := validateHostname(host); err != nil {
+		return fmt.Sprintf("invalid host: %v", err), true
+	}
+	if err := validatePort(port); err != nil {
+		return fmt.Sprintf("invalid port: %v", err), true
+	}
+	if err := validateUsername(user); err != nil {
+		return fmt.Sprintf("invalid user: %v", err), true
+	}
+
 	// Create temporary App for SSH pool
 	app := &App{
 		Host:    host,
@@ -616,7 +630,7 @@ func (s *server) devopsBootstrap(args map[string]any) (string, bool) {
 	}
 
 	// Check if agent binary exists
-	_, _, exitCode, err := sshExec(client, "test -f /usr/local/bin/devops")
+	_, _, exitCode, err := sshExec(s.ctx, client, "test -f /usr/local/bin/devops")
 	if err != nil {
 		return fmt.Sprintf("ssh exec: %v", err), true
 	}
@@ -647,7 +661,7 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 		if err != nil {
 			return fmt.Sprintf("read embedded %s: %v", cf.embedName, err), true
 		}
-		if err := sshWriteFile(client, cf.remotePath, content); err != nil {
+		if err := sshWriteFile(s.ctx, client, cf.remotePath, content); err != nil {
 			return fmt.Sprintf("write %s: %v", cf.remotePath, err), true
 		}
 	}
@@ -657,7 +671,7 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 	if err != nil {
 		return fmt.Sprintf("read setup.sh: %v", err), true
 	}
-	_, stderr, exitCode, err := sshExecStdin(client, "bash -s", setupScript)
+	_, stderr, exitCode, err := sshExecStdin(s.ctx, client, "bash -s", setupScript)
 	if err != nil {
 		return fmt.Sprintf("setup.sh exec error: %v", err), true
 	}
@@ -667,13 +681,13 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 
 	// 3. Write default filter config
 	defaultFilterConfig := `{"allowed_ports":[],"allow_reboot":false,"allow_shutdown":false,"custom_blocked":[]}`
-	if err := sshWriteFile(client, "/etc/devops-agent/filters.json", defaultFilterConfig); err != nil {
+	if err := sshWriteFile(s.ctx, client, "/etc/devops-agent/filters.json", defaultFilterConfig); err != nil {
 		return fmt.Sprintf("write filter config: %v", err), true
 	}
 
 	// 4. Download agent binary from GitHub release
 	dlCmd := fmt.Sprintf("curl -fsSL -o /usr/local/bin/devops '%s' && chmod +x /usr/local/bin/devops", releaseURL())
-	_, stderr, exitCode, err = sshExec(client, dlCmd)
+	_, stderr, exitCode, err = sshExec(s.ctx, client, dlCmd)
 	if err != nil {
 		return fmt.Sprintf("download agent: %v", err), true
 	}
@@ -682,7 +696,7 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 	}
 
 	// 5. Enable and start the agent service
-	_, stderr, exitCode, err = sshExec(client, "systemctl daemon-reload && systemctl enable --now devops-agent")
+	_, stderr, exitCode, err = sshExec(s.ctx, client, "systemctl daemon-reload && systemctl enable --now devops-agent")
 	if err != nil {
 		return fmt.Sprintf("enable service: %v", err), true
 	}
@@ -696,7 +710,7 @@ func (s *server) bootstrapFreshInstall(client *ssh.Client) (string, bool) {
 func (s *server) bootstrapUpdate(client *ssh.Client, oldVersion string) (string, bool) {
 	// 1. Download new binary to temp location
 	dlCmd := fmt.Sprintf("curl -fsSL -o /usr/local/bin/devops.new '%s' && chmod +x /usr/local/bin/devops.new && mv /usr/local/bin/devops.new /usr/local/bin/devops", releaseURL())
-	_, stderr, exitCode, err := sshExec(client, dlCmd)
+	_, stderr, exitCode, err := sshExec(s.ctx, client, dlCmd)
 	if err != nil {
 		return fmt.Sprintf("download agent: %v", err), true
 	}
@@ -709,12 +723,12 @@ func (s *server) bootstrapUpdate(client *ssh.Client, oldVersion string) (string,
 	if err != nil {
 		return fmt.Sprintf("read service unit: %v", err), true
 	}
-	if err := sshWriteFile(client, "/etc/systemd/system/devops-agent.service", content); err != nil {
+	if err := sshWriteFile(s.ctx, client, "/etc/systemd/system/devops-agent.service", content); err != nil {
 		return fmt.Sprintf("write service unit: %v", err), true
 	}
 
 	// 3. Reload and restart
-	_, stderr, exitCode, err = sshExec(client, "systemctl daemon-reload && systemctl restart devops-agent")
+	_, stderr, exitCode, err = sshExec(s.ctx, client, "systemctl daemon-reload && systemctl restart devops-agent")
 	if err != nil {
 		return fmt.Sprintf("restart agent: %v", err), true
 	}
@@ -741,11 +755,25 @@ func (s *server) devopsImport(args map[string]any) (string, bool) {
 		return "name, host, and deploy_dir are required", true
 	}
 
+	port := intArg(args, "port", 22)
+	user := strArg(args, "user", "root")
+
+	// Validate SSH connection parameters before use
+	if err := validateHostname(host); err != nil {
+		return fmt.Sprintf("invalid host: %v", err), true
+	}
+	if err := validatePort(port); err != nil {
+		return fmt.Sprintf("invalid port: %v", err), true
+	}
+	if err := validateUsername(user); err != nil {
+		return fmt.Sprintf("invalid user: %v", err), true
+	}
+
 	// Create temporary App for agent communication
 	app := &App{
 		Host:    host,
-		Port:    intArg(args, "port", 22),
-		User:    strArg(args, "user", "root"),
+		Port:    port,
+		User:    user,
 		KeyPath: strArg(args, "key_path", ""),
 	}
 
@@ -766,11 +794,11 @@ func (s *server) devopsImport(args map[string]any) (string, bool) {
 
 	// Parse discovery data
 	var discovered struct {
-		Runtime     string `json:"runtime"`
-		ComposeFile string `json:"compose_file"`
+		Runtime     string   `json:"runtime"`
+		ComposeFile string   `json:"compose_file"`
 		Services    []string `json:"services"`
-		RepoURL     string `json:"repo_url"`
-		Branch      string `json:"branch"`
+		RepoURL     string   `json:"repo_url"`
+		Branch      string   `json:"branch"`
 	}
 	if resp.Data != nil {
 		if err := json.Unmarshal(resp.Data, &discovered); err != nil {
@@ -780,16 +808,16 @@ func (s *server) devopsImport(args map[string]any) (string, bool) {
 
 	// Build app from discovered + overrides
 	newApp := &App{
-		Name:        name,
-		Host:        host,
-		Port:        app.Port,
-		User:        app.User,
-		Runtime:     discovered.Runtime,
-		ComposeFile: discovered.ComposeFile,
-		RepoURL:     discovered.RepoURL,
-		Branch:      discovered.Branch,
-		DeployDir:   deployDir,
-		KeyPath:     app.KeyPath,
+		Name:           name,
+		Host:           host,
+		Port:           app.Port,
+		User:           app.User,
+		Runtime:        discovered.Runtime,
+		ComposeFile:    discovered.ComposeFile,
+		RepoURL:        discovered.RepoURL,
+		Branch:         discovered.Branch,
+		DeployDir:      deployDir,
+		KeyPath:        app.KeyPath,
 		DeployCommands: "[]",
 	}
 
@@ -849,26 +877,26 @@ func (s *server) devopsImport(args map[string]any) (string, bool) {
 
 	// Return created record + discovery data
 	type importResult struct {
-		App       string          `json:"app"`
-		Host      string          `json:"host"`
-		Runtime   string          `json:"rt"`
-		Service   string          `json:"svc"`
-		Compose   string          `json:"compose,omitempty"`
-		Repo      string          `json:"repo,omitempty"`
-		Branch    string          `json:"branch,omitempty"`
-		DeployDir string          `json:"dir"`
+		App        string          `json:"app"`
+		Host       string          `json:"host"`
+		Runtime    string          `json:"rt"`
+		Service    string          `json:"svc"`
+		Compose    string          `json:"compose,omitempty"`
+		Repo       string          `json:"repo,omitempty"`
+		Branch     string          `json:"branch,omitempty"`
+		DeployDir  string          `json:"dir"`
 		Discovered json.RawMessage `json:"discovered"`
 	}
 
 	result := importResult{
-		App:       name,
-		Host:      host,
-		Runtime:   newApp.Runtime,
-		Service:   newApp.ServiceName,
-		Compose:   newApp.ComposeFile,
-		Repo:      newApp.RepoURL,
-		Branch:    newApp.Branch,
-		DeployDir: deployDir,
+		App:        name,
+		Host:       host,
+		Runtime:    newApp.Runtime,
+		Service:    newApp.ServiceName,
+		Compose:    newApp.ComposeFile,
+		Repo:       newApp.RepoURL,
+		Branch:     newApp.Branch,
+		DeployDir:  deployDir,
 		Discovered: resp.Data,
 	}
 
@@ -916,6 +944,22 @@ func boolArg(args map[string]any, key string, def bool) bool {
 		return v
 	}
 	return def
+}
+
+// stripQueryParams removes query parameters and fragments from a URL string
+// so that tokens or secrets in query params are not leaked into error messages.
+func stripQueryParams(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		// If unparseable, truncate at first '?' as a fallback
+		if idx := strings.Index(rawURL, "?"); idx >= 0 {
+			return rawURL[:idx]
+		}
+		return rawURL
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 // Filter management handlers
@@ -1074,7 +1118,7 @@ func (s *server) devopsFilterSync(args map[string]any) (string, bool) {
 		return fmt.Sprintf("ssh connect: %v", err), true
 	}
 
-	if err := sshWriteFile(client, "/etc/devops-agent/filters.json", string(configJSON)); err != nil {
+	if err := sshWriteFile(s.ctx, client, "/etc/devops-agent/filters.json", string(configJSON)); err != nil {
 		return fmt.Sprintf("write filter config: %v", err), true
 	}
 

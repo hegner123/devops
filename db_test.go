@@ -22,15 +22,15 @@ func testStore(t *testing.T) *store {
 
 func testApp() *App {
 	return &App{
-		Name:        "myapp",
-		Host:        "192.168.1.1",
-		Port:        22,
-		User:        "root",
-		Runtime:     "docker",
-		ServiceName: "web",
-		ComposeFile: "/opt/myapp/compose.yml",
-		Branch:      "main",
-		DeployDir:   "/opt/myapp",
+		Name:           "myapp",
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "root",
+		Runtime:        "docker",
+		ServiceName:    "web",
+		ComposeFile:    "/opt/myapp/compose.yml",
+		Branch:         "main",
+		DeployDir:      "/opt/myapp",
 		DeployCommands: `["git pull","docker compose up -d"]`,
 	}
 }

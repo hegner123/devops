@@ -7,14 +7,88 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+const maxOutputBytes = 10 << 20 // 10MB
+
+// limitedBuffer wraps bytes.Buffer with a maximum size. Writes beyond the
+// limit are silently discarded (no error), so command execution is not
+// interrupted by verbose output.
+type limitedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func newLimitedBuffer(max int) *limitedBuffer {
+	return &limitedBuffer{max: max}
+}
+
+func (lb *limitedBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	remaining := lb.max - lb.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil // silently discard
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	lb.buf.Write(p)
+	return len(p), nil
+}
+
+func (lb *limitedBuffer) String() string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.String()
+}
+
+// ssrfCheckEnabled controls whether health checks block private IPs.
+// Tests may set this to false to allow httptest.NewServer on 127.0.0.1.
+var ssrfCheckEnabled = true
+
+// privateIPBlocks contains CIDR ranges that must not be targeted by health checks.
+var privateIPBlocks []*net.IPNet
+
+func init() {
+	cidrs := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"fd00::/8",
+		"::1/128",
+	}
+	for _, cidr := range cidrs {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Sprintf("bad CIDR %q: %v", cidr, err))
+		}
+		privateIPBlocks = append(privateIPBlocks, block)
+	}
+}
+
+func isPrivateIP(ip net.IP) bool {
+	for _, block := range privateIPBlocks {
+		if block.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 func registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ping", handlePing)
@@ -51,6 +125,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 }
 
 func readBody(r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20) // 1MB limit
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }
@@ -109,9 +184,10 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.CommandContext(ctx, binPath, req.Args...)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedBuffer(maxOutputBytes)
+	stderr := newLimitedBuffer(maxOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 	exitCode := 0
@@ -203,9 +279,10 @@ func handleService(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedBuffer(maxOutputBytes)
+	stderr := newLimitedBuffer(maxOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 	if err != nil {
@@ -284,6 +361,9 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	if req.Lines <= 0 {
 		req.Lines = 50
 	}
+	if req.Lines > 10000 {
+		req.Lines = 10000
+	}
 	linesStr := strconv.Itoa(req.Lines)
 
 	if req.Runtime == "docker" {
@@ -311,9 +391,10 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedBuffer(maxOutputBytes)
+	stderr := newLimitedBuffer(maxOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
 		writeJSON(w, http.StatusOK, agentResponse{
@@ -341,6 +422,32 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF protection: only allow http/https and block private IPs
+	parsed, err := url.Parse(req.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid URL: %v", err))
+		return
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		writeError(w, http.StatusBadRequest, "health check blocked: only http and https schemes are allowed")
+		return
+	}
+
+	if ssrfCheckEnabled {
+		hostname := parsed.Hostname()
+		ips, err := net.LookupIP(hostname)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("health check blocked: cannot resolve hostname %q: %v", hostname, err))
+			return
+		}
+		for _, ip := range ips {
+			if isPrivateIP(ip) {
+				writeError(w, http.StatusForbidden, "health check blocked: URL resolves to private IP range")
+				return
+			}
+		}
+	}
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(req.URL)
 	if err != nil {
@@ -352,14 +459,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	var body bytes.Buffer
-	body.ReadFrom(resp.Body)
-
-	// Truncate body to 4KB
-	bodyStr := body.String()
-	if len(bodyStr) > 4096 {
-		bodyStr = bodyStr[:4096]
-	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyStr := string(bodyBytes)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     resp.StatusCode >= 200 && resp.StatusCode < 400,
@@ -399,12 +500,12 @@ func handleDiscover(w http.ResponseWriter, r *http.Request) {
 }
 
 type discoveryResult struct {
-	Runtime     string           `json:"runtime"`
-	ComposeFile string           `json:"compose_file,omitempty"`
-	Services    []string         `json:"services,omitempty"`
-	RepoURL     string           `json:"repo_url,omitempty"`
-	Branch      string           `json:"branch,omitempty"`
-	Containers  []containerInfo  `json:"containers,omitempty"`
+	Runtime     string          `json:"runtime"`
+	ComposeFile string          `json:"compose_file,omitempty"`
+	Services    []string        `json:"services,omitempty"`
+	RepoURL     string          `json:"repo_url,omitempty"`
+	Branch      string          `json:"branch,omitempty"`
+	Containers  []containerInfo `json:"containers,omitempty"`
 }
 
 type containerInfo struct {
@@ -629,9 +730,10 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 		cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
 		cmd.Dir = req.Dir
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		stdout := newLimitedBuffer(maxOutputBytes)
+		stderr := newLimitedBuffer(maxOutputBytes)
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 
 		err := cmd.Run()
 		elapsed := fmt.Sprintf("%.1fs", time.Since(start).Seconds())

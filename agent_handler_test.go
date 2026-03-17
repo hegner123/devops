@@ -143,6 +143,10 @@ func TestExec(t *testing.T) {
 func TestHealth(t *testing.T) {
 	mux := testMux()
 
+	// Disable SSRF check so httptest.NewServer on 127.0.0.1 works
+	ssrfCheckEnabled = false
+	t.Cleanup(func() { ssrfCheckEnabled = true })
+
 	// Create a test HTTP server to check against
 	healthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -187,6 +191,50 @@ func TestHealth(t *testing.T) {
 		resp := decodeResponse(t, rec)
 		if resp["ok"] != false {
 			t.Errorf("ok = %v, want false", resp["ok"])
+		}
+	})
+}
+
+func TestHealthSSRF(t *testing.T) {
+	mux := testMux()
+
+	// Ensure SSRF check is enabled
+	ssrfCheckEnabled = true
+	t.Cleanup(func() { ssrfCheckEnabled = true })
+
+	t.Run("blocks private IP", func(t *testing.T) {
+		rec := doPost(mux, "/health", map[string]any{
+			"url": "http://127.0.0.1:8080/health",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("blocks metadata endpoint", func(t *testing.T) {
+		rec := doPost(mux, "/health", map[string]any{
+			"url": "http://169.254.169.254/latest/meta-data/",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("blocks file scheme", func(t *testing.T) {
+		rec := doPost(mux, "/health", map[string]any{
+			"url": "file:///etc/shadow",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("blocks internal network", func(t *testing.T) {
+		rec := doPost(mux, "/health", map[string]any{
+			"url": "http://10.0.0.1:6379/",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
 		}
 	})
 }
