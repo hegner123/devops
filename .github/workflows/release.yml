@@ -14,8 +14,8 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            binary: devops-agent
-            tags: agent
+            binary: devops
+            tags: ""
             asset: devops-linux-amd64
           - goos: darwin
             goarch: arm64
