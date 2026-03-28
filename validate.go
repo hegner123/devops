@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -132,8 +133,8 @@ func validatePath(s string) error {
 			return fmt.Errorf("path contains null byte")
 		}
 	}
-	// Canonicalize and verify the cleaned path
-	cleaned := filepath.Clean(s)
+	// Canonicalize using POSIX path (remote paths are always Unix)
+	cleaned := path.Clean(s)
 	if cleaned[0] != '/' {
 		return fmt.Errorf("path must be absolute after canonicalization")
 	}
