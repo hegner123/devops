@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/devops agent
 RuntimeDirectory=devops-agent
+StateDirectory=devops-agent
 Restart=on-failure
 RestartSec=5
 

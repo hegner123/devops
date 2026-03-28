@@ -1,5 +1,3 @@
-//go:build agent
-
 package main
 
 import (
@@ -14,22 +12,9 @@ import (
 	"time"
 )
 
-const socketPath = "/run/devops-agent/agent.sock"
+const agentDBPath = "/var/lib/devops-agent/apps.db"
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: devops agent|version\n")
-		os.Exit(1)
-	}
-	if os.Args[1] == "version" {
-		fmt.Println(Version)
-		return
-	}
-	if os.Args[1] != "agent" {
-		fmt.Fprintf(os.Stderr, "usage: devops agent|version\n")
-		os.Exit(1)
-	}
-
+func agentMain() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -46,27 +31,34 @@ func main() {
 		}()
 	}()
 
+	st, err := newStore(agentDBPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open agent database: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.close()
+
 	// Remove stale socket if it exists
-	os.Remove(socketPath)
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+	os.Remove(agentSocketPath)
+	if err := os.MkdirAll(filepath.Dir(agentSocketPath), 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "create socket directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen("unix", agentSocketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "listen: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := os.Chmod(socketPath, 0600); err != nil {
+	if err := os.Chmod(agentSocketPath, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "chmod socket: %v\n", err)
 		listener.Close()
 		os.Exit(1)
 	}
 
 	mux := http.NewServeMux()
-	registerHandlers(mux)
+	registerHandlers(mux, st)
 
 	// Limit to 10 concurrent requests
 	sem := make(chan struct{}, 10)
@@ -97,7 +89,7 @@ func main() {
 	}()
 
 	hostname, _ := os.Hostname()
-	fmt.Fprintf(os.Stderr, "devops agent %s listening on %s (host: %s)\n", Version, socketPath, hostname)
+	fmt.Fprintf(os.Stderr, "devops agent %s listening on %s (host: %s)\n", Version, agentSocketPath, hostname)
 
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)

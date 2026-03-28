@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -397,7 +395,7 @@ func readEmbedFile(name string) (string, error) {
 // agentPing pings the agent via SSH channel forwarding to the unix socket.
 // Returns the agent version string on success.
 func agentPing(client *ssh.Client) (string, error) {
-	conn, err := client.Dial("unix", agentSocket)
+	conn, err := client.Dial("unix", agentSocketPath)
 	if err != nil {
 		return "", fmt.Errorf("dial agent socket: %w", err)
 	}

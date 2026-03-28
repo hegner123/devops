@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -11,6 +9,24 @@ import (
 	"os/signal"
 	"sync"
 )
+
+func mcpMain() {
+	st, err := newStore(dbPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.close()
+
+	pool := newConnPool()
+
+	s := &server{
+		store: st,
+		pool:  pool,
+		agent: &agentClient{pool: pool},
+	}
+	s.run()
+}
 
 type server struct {
 	store *store
@@ -196,6 +212,8 @@ func (s *server) handleToolsCall(req *jsonRPCRequest, out chan<- jsonRPCResponse
 		result, isError = s.devopsFilterRemove(params.Arguments)
 	case "devops_filter_sync":
 		result, isError = s.devopsFilterSync(params.Arguments)
+	case "devops_app_sync":
+		result, isError = s.devopsAppSync(params.Arguments)
 	default:
 		out <- jsonRPCResponse{
 			JSONRPC: "2.0",

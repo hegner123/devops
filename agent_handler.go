@@ -1,10 +1,9 @@
-//go:build agent
-
 package main
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,7 +89,7 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-func registerHandlers(mux *http.ServeMux) {
+func registerHandlers(mux *http.ServeMux, st *store) {
 	mux.HandleFunc("GET /ping", handlePing)
 	mux.HandleFunc("GET /filters", handleFilters)
 	mux.HandleFunc("POST /exec", handleExec)
@@ -99,19 +98,10 @@ func registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /health", handleHealth)
 	mux.HandleFunc("POST /discover", handleDiscover)
 	mux.HandleFunc("POST /deploy", handleDeploy)
-}
-
-// agentResponse is the standard response envelope.
-type agentResponse struct {
-	OK     bool   `json:"ok"`
-	Error  string `json:"error,omitempty"`
-	Stdout string `json:"stdout,omitempty"`
-	Stderr string `json:"stderr,omitempty"`
-	Exit   *int   `json:"exit,omitempty"`
-	Data   any    `json:"data,omitempty"`
-	Output string `json:"output,omitempty"`
-	Status int    `json:"status,omitempty"`
-	Body   string `json:"body,omitempty"`
+	if st != nil {
+		mux.HandleFunc("POST /sync-apps", syncAppsHandler(st))
+		mux.HandleFunc("POST /redeploy", redeployHandler(st))
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -121,7 +111,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, agentResponse{OK: false, Error: msg})
+	writeJSON(w, code, AgentResponse{OK: false, Error: msg})
 }
 
 func readBody(r *http.Request, v any) error {
@@ -200,7 +190,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, agentResponse{
+	writeJSON(w, http.StatusOK, AgentResponse{
 		OK:     exitCode == 0,
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
@@ -295,7 +285,7 @@ func handleService(w http.ResponseWriter, r *http.Request) {
 			if errMsg == "" {
 				errMsg = fmt.Sprintf("%s %s %s exited %d", req.Runtime, req.Action, req.Name, exitCode)
 			}
-			writeJSON(w, http.StatusOK, agentResponse{
+			writeJSON(w, http.StatusOK, AgentResponse{
 				OK:     false,
 				Error:  errMsg,
 				Stdout: stdout.String(),
@@ -317,7 +307,7 @@ func handleService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, agentResponse{OK: true})
+	writeJSON(w, http.StatusOK, AgentResponse{OK: true})
 }
 
 func parseStatusOutput(runtime, output string) map[string]string {
@@ -397,7 +387,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
-		writeJSON(w, http.StatusOK, agentResponse{
+		writeJSON(w, http.StatusOK, AgentResponse{
 			OK:     false,
 			Error:  fmt.Sprintf("logs failed: %v", err),
 			Output: stderr.String(),
@@ -405,7 +395,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, agentResponse{OK: true, Output: stdout.String()})
+	writeJSON(w, http.StatusOK, AgentResponse{OK: true, Output: stdout.String()})
 }
 
 // handleHealth checks an HTTP health endpoint.
@@ -451,7 +441,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(req.URL)
 	if err != nil {
-		writeJSON(w, http.StatusOK, agentResponse{
+		writeJSON(w, http.StatusOK, AgentResponse{
 			OK:    false,
 			Error: fmt.Sprintf("health check failed: %v", err),
 		})
@@ -680,6 +670,13 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	executeDeploy(w, r, req.Dir, req.Commands)
+}
+
+// executeDeploy runs deploy commands with NDJSON streaming output.
+// Shared by handleDeploy (remote-initiated) and redeployHandler (container-initiated).
+// Returns the last status ("done", "failed", "blocked") and accumulated output.
+func executeDeploy(w http.ResponseWriter, r *http.Request, dir string, commands []string) (lastStatus string, output string) {
 	// Overall 30m timeout
 	deployCtx, deployCancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer deployCancel()
@@ -698,13 +695,17 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for i, command := range req.Commands {
+	var allOutput strings.Builder
+	lastStatus = "done"
+
+	for i, command := range commands {
 		step := i + 1
 
 		// Check if client disconnected before starting next command
 		select {
 		case <-deployCtx.Done():
-			return
+			lastStatus = "failed"
+			return lastStatus, allOutput.String()
 		default:
 		}
 
@@ -715,7 +716,8 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 				"status": "blocked",
 				"error":  err.Error(),
 			})
-			return
+			lastStatus = "blocked"
+			return lastStatus, allOutput.String()
 		}
 
 		writeChunk(map[string]any{
@@ -729,7 +731,7 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
-		cmd.Dir = req.Dir
+		cmd.Dir = dir
 		stdout := newLimitedBuffer(maxOutputBytes)
 		stderr := newLimitedBuffer(maxOutputBytes)
 		cmd.Stdout = stdout
@@ -753,7 +755,9 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 				"stderr":  stderr.String(),
 				"elapsed": elapsed,
 			})
-			return // Stop on first failure
+			fmt.Fprintf(&allOutput, "step %d: %s (exit %d, %s)\n%s%s", step, command, exitCode, elapsed, stdout.String(), stderr.String())
+			lastStatus = "failed"
+			return lastStatus, allOutput.String()
 		}
 
 		writeChunk(map[string]any{
@@ -765,6 +769,124 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"stderr":  stderr.String(),
 			"elapsed": elapsed,
 		})
+		fmt.Fprintf(&allOutput, "step %d: %s (exit 0, %s)\n", step, command, elapsed)
+	}
+
+	return lastStatus, allOutput.String()
+}
+
+// syncAppsHandler receives app configs from the local devops and upserts them
+// into the agent's SQLite DB. Apps not in the incoming set are pruned.
+func syncAppsHandler(st *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Apps []App `json:"apps"`
+		}
+		if err := readBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if len(req.Apps) == 0 {
+			writeError(w, http.StatusBadRequest, "apps array is required and must not be empty")
+			return
+		}
+
+		names := make([]string, 0, len(req.Apps))
+		for _, a := range req.Apps {
+			app := a
+			if err := st.upsertApp(&app); err != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("upsert app %q: %v", app.Name, err))
+				return
+			}
+			names = append(names, app.Name)
+		}
+
+		removed, err := st.deleteAppsNotIn(names)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prune stale apps: %v", err))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"synced":  len(req.Apps),
+			"removed": removed,
+		})
+	}
+}
+
+const redeployBackoff = 5 * time.Minute
+
+// redeployHandler allows a container to trigger its own redeployment.
+// The container POSTs {"name": "appname"} and the agent reads deploy commands
+// from its local DB and executes them.
+func redeployHandler(st *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name  string `json:"name"`
+			Force bool   `json:"force"`
+		}
+		if err := readBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+
+		app, err := st.getApp(req.Name)
+		if err != nil {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("app %q not found in agent DB — run devops_app_sync first", req.Name))
+			return
+		}
+
+		// Retry protection: reject if last deploy failed recently
+		if !req.Force && app.LastDeployOK.Valid && app.LastDeployOK.Int64 == 0 && app.LastDeployAt.Valid {
+			lastDeploy, parseErr := time.Parse("2006-01-02 15:04:05", app.LastDeployAt.String)
+			if parseErr == nil && time.Since(lastDeploy) < redeployBackoff {
+				retryAfter := lastDeploy.Add(redeployBackoff)
+				writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+					"last deploy failed at %s; retry after %s or pass force=true",
+					app.LastDeployAt.String, retryAfter.Format(time.RFC3339),
+				))
+				return
+			}
+		}
+
+		var commands []string
+		if err := json.Unmarshal([]byte(app.DeployCommands), &commands); err != nil || len(commands) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("no deploy commands configured for app %q", req.Name))
+			return
+		}
+
+		if app.DeployDir == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("no deploy_dir configured for app %q", req.Name))
+			return
+		}
+
+		info, statErr := os.Stat(app.DeployDir)
+		if statErr != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("deploy_dir not found: %s", app.DeployDir))
+			return
+		}
+		if !info.IsDir() {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("deploy_dir is not a directory: %s", app.DeployDir))
+			return
+		}
+
+		lastStatus, deployOutput := executeDeploy(w, r, app.DeployDir, commands)
+
+		// Truncate output to 4KB for storage
+		if len(deployOutput) > 4096 {
+			deployOutput = deployOutput[len(deployOutput)-4096:]
+		}
+
+		ok := sql.NullInt64{Valid: true, Int64: 1}
+		if lastStatus == "failed" || lastStatus == "blocked" {
+			ok.Int64 = 0
+		}
+		st.updateDeployResult(req.Name, ok, deployOutput)
 	}
 }
 

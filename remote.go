@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -12,8 +10,6 @@ import (
 	"net/http"
 	"time"
 )
-
-const agentSocket = "/run/devops-agent/agent.sock"
 
 // connectError wraps errors that occur during connection establishment
 // (SSH pool.get or client.Dial), before any request is sent. Only these
@@ -68,7 +64,7 @@ func (a *agentClient) doCall(ctx context.Context, app *App, endpoint string, req
 		return nil, &connectError{err: fmt.Errorf("ssh connect: %w", err)}
 	}
 
-	conn, err := client.Dial("unix", agentSocket)
+	conn, err := client.Dial("unix", agentSocketPath)
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("dial agent socket: %w", err)}
 	}
@@ -127,7 +123,7 @@ func (a *agentClient) doCallStream(ctx context.Context, app *App, endpoint strin
 		return nil, &connectError{err: fmt.Errorf("ssh connect: %w", err)}
 	}
 
-	conn, err := client.Dial("unix", agentSocket)
+	conn, err := client.Dial("unix", agentSocketPath)
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("dial agent socket: %w", err)}
 	}

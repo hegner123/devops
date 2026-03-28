@@ -1,10 +1,9 @@
-//go:build agent
-
 package main
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,11 +13,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testMux() *http.ServeMux {
+	return testMuxWithStore(nil)
+}
+
+func testMuxWithStore(st *store) *http.ServeMux {
 	mux := http.NewServeMux()
-	registerHandlers(mux)
+	registerHandlers(mux, st)
 	return mux
 }
 
@@ -102,7 +106,7 @@ func TestExec(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
-		var resp agentResponse
+		var resp AgentResponse
 		json.NewDecoder(rec.Body).Decode(&resp)
 		if !resp.OK {
 			t.Errorf("ok = false, want true")
@@ -630,5 +634,263 @@ func TestUnixSocketServer(t *testing.T) {
 	}
 	if result["version"] != Version {
 		t.Errorf("version = %v, want %s", result["version"], Version)
+	}
+}
+
+func TestSyncApps(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	apps := []map[string]any{
+		{
+			"name":            "app1",
+			"host":            "10.0.0.1",
+			"port":            22,
+			"user":            "root",
+			"runtime":         "docker",
+			"service_name":    "web",
+			"compose_file":    "/opt/app1/compose.yml",
+			"branch":          "main",
+			"deploy_dir":      "/opt/app1",
+			"deploy_commands": `["git pull","docker compose up -d"]`,
+		},
+		{
+			"name":         "app2",
+			"host":         "10.0.0.1",
+			"port":         22,
+			"user":         "root",
+			"runtime":      "systemd",
+			"service_name": "app2",
+			"branch":       "main",
+		},
+	}
+
+	rec := doPost(mux, "/sync-apps", map[string]any{"apps": apps})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeResponse(t, rec)
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
+	}
+	if resp["synced"].(float64) != 2 {
+		t.Errorf("synced = %v, want 2", resp["synced"])
+	}
+
+	// Verify apps are in DB
+	got1, err := st.getApp("app1")
+	if err != nil {
+		t.Fatalf("getApp app1: %v", err)
+	}
+	if got1.Host != "10.0.0.1" {
+		t.Errorf("app1 host = %q, want 10.0.0.1", got1.Host)
+	}
+	if got1.DeployCommands != `["git pull","docker compose up -d"]` {
+		t.Errorf("app1 deploy_commands = %q", got1.DeployCommands)
+	}
+}
+
+func TestSyncAppsRemovesStale(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	// Sync 3 apps
+	apps := []map[string]any{
+		{"name": "a", "host": "h", "port": 22, "user": "root", "runtime": "systemd", "service_name": "a", "branch": "main"},
+		{"name": "b", "host": "h", "port": 22, "user": "root", "runtime": "systemd", "service_name": "b", "branch": "main"},
+		{"name": "c", "host": "h", "port": 22, "user": "root", "runtime": "systemd", "service_name": "c", "branch": "main"},
+	}
+	rec := doPost(mux, "/sync-apps", map[string]any{"apps": apps})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first sync: status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Sync only 2 apps (remove c)
+	apps = apps[:2]
+	rec = doPost(mux, "/sync-apps", map[string]any{"apps": apps})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second sync: status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeResponse(t, rec)
+	if resp["removed"].(float64) != 1 {
+		t.Errorf("removed = %v, want 1", resp["removed"])
+	}
+
+	// Verify c is gone
+	_, err := st.getApp("c")
+	if err == nil {
+		t.Error("app c should have been removed")
+	}
+}
+
+func TestRedeployNotFound(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	rec := doPost(mux, "/redeploy", map[string]any{"name": "nonexistent"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRedeployNoCommands(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	app := &App{
+		Name:           "nocommands",
+		Host:           "10.0.0.1",
+		Port:           22,
+		User:           "root",
+		Runtime:        "systemd",
+		ServiceName:    "nocommands",
+		Branch:         "main",
+		DeployDir:      "/opt/nocommands",
+		DeployCommands: "[]",
+	}
+	if err := st.addApp(app); err != nil {
+		t.Fatalf("addApp: %v", err)
+	}
+
+	rec := doPost(mux, "/redeploy", map[string]any{"name": "nocommands"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRedeploySuccess(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	dir := t.TempDir()
+	app := &App{
+		Name:           "redeployable",
+		Host:           "10.0.0.1",
+		Port:           22,
+		User:           "root",
+		Runtime:        "docker",
+		ServiceName:    "web",
+		ComposeFile:    "/opt/app/compose.yml",
+		Branch:         "main",
+		DeployDir:      dir,
+		DeployCommands: `["echo step1","echo step2"]`,
+	}
+	if err := st.addApp(app); err != nil {
+		t.Fatalf("addApp: %v", err)
+	}
+
+	rec := doPost(mux, "/redeploy", map[string]any{"name": "redeployable"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Parse NDJSON: should have running+done for each command (4 lines)
+	lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("got %d lines, want 4:\n%s", len(lines), rec.Body.String())
+	}
+
+	// Verify deploy result was recorded in DB
+	got, err := st.getApp("redeployable")
+	if err != nil {
+		t.Fatalf("getApp: %v", err)
+	}
+	if !got.LastDeployOK.Valid || got.LastDeployOK.Int64 != 1 {
+		t.Errorf("last_deploy_ok = %v, want 1", got.LastDeployOK)
+	}
+	if !got.LastDeployAt.Valid {
+		t.Error("last_deploy_at should be set")
+	}
+}
+
+func TestRedeployRetryProtection(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	dir := t.TempDir()
+	app := &App{
+		Name:           "failing-app",
+		Host:           "10.0.0.1",
+		Port:           22,
+		User:           "root",
+		Runtime:        "docker",
+		ServiceName:    "web",
+		ComposeFile:    "/opt/app/compose.yml",
+		Branch:         "main",
+		DeployDir:      dir,
+		DeployCommands: `["echo hello"]`,
+	}
+	if err := st.addApp(app); err != nil {
+		t.Fatalf("addApp: %v", err)
+	}
+
+	// Simulate a recent failed deploy
+	if err := st.updateDeployResult("failing-app", sql.NullInt64{Int64: 0, Valid: true}, "error"); err != nil {
+		t.Fatalf("updateDeployResult: %v", err)
+	}
+
+	// Should be rejected (within backoff window)
+	rec := doPost(mux, "/redeploy", map[string]any{"name": "failing-app"})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Should succeed with force=true
+	rec = doPost(mux, "/redeploy", map[string]any{"name": "failing-app", "force": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("force status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRedeployRetryExpired(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	dir := t.TempDir()
+	app := &App{
+		Name:           "old-fail-app",
+		Host:           "10.0.0.1",
+		Port:           22,
+		User:           "root",
+		Runtime:        "docker",
+		ServiceName:    "web",
+		ComposeFile:    "/opt/app/compose.yml",
+		Branch:         "main",
+		DeployDir:      dir,
+		DeployCommands: `["echo hello"]`,
+	}
+	if err := st.addApp(app); err != nil {
+		t.Fatalf("addApp: %v", err)
+	}
+
+	// Simulate a failed deploy from 10 minutes ago
+	oldTime := time.Now().Add(-10 * time.Minute).Format("2006-01-02 15:04:05")
+	st.db.Exec("UPDATE apps SET last_deploy_ok = 0, last_deploy_at = ? WHERE name = ?", oldTime, "old-fail-app")
+
+	// Should succeed (backoff expired)
+	rec := doPost(mux, "/redeploy", map[string]any{"name": "old-fail-app"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRedeployMissingName(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	rec := doPost(mux, "/redeploy", map[string]any{})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSyncAppsEmpty(t *testing.T) {
+	st := testStore(t)
+	mux := testMuxWithStore(st)
+
+	rec := doPost(mux, "/sync-apps", map[string]any{"apps": []any{}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
 	}
 }

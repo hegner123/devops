@@ -1,4 +1,4 @@
-//go:build !agent && windows
+//go:build windows
 
 package main
 

@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -1123,4 +1121,55 @@ func (s *server) devopsFilterSync(args map[string]any) (string, bool) {
 	}
 
 	return fmt.Sprintf("synced %d custom filters to %s", len(filters), host), false
+}
+
+func (s *server) devopsAppSync(args map[string]any) (string, bool) {
+	host, _ := args["host"].(string)
+	if host == "" {
+		return "host is required", true
+	}
+
+	// Get SSH connection: try explicit name first, then find first app on host
+	var app *App
+	if name, ok := args["name"].(string); ok && name != "" {
+		a, err := s.store.getApp(name)
+		if err != nil {
+			return err.Error(), true
+		}
+		app = a
+	} else {
+		apps, err := s.store.listApps(host)
+		if err != nil {
+			return fmt.Sprintf("failed to list apps: %v", err), true
+		}
+		if len(apps) == 0 {
+			return fmt.Sprintf("no apps registered on host %s, provide name for SSH config", host), true
+		}
+		app = &apps[0]
+	}
+
+	// Get all apps for this host
+	apps, err := s.store.listApps(host)
+	if err != nil {
+		return fmt.Sprintf("failed to list apps: %v", err), true
+	}
+	if len(apps) == 0 {
+		return fmt.Sprintf("no apps registered on host %s", host), true
+	}
+
+	payload := map[string]any{"apps": apps}
+
+	resp, err := s.agent.call(s.ctx, app, "/sync-apps", payload)
+	if err != nil {
+		return fmt.Sprintf("sync apps to agent: %v", err), true
+	}
+	if !resp.OK {
+		detail := resp.Error
+		if detail == "" {
+			detail = "agent returned ok=false with no error message"
+		}
+		return fmt.Sprintf("agent sync failed: %s", detail), true
+	}
+
+	return fmt.Sprintf("synced %d apps to %s", len(apps), host), false
 }

@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 func toolDefinitions() []map[string]any {
@@ -251,6 +249,18 @@ func toolDefinitions() []map[string]any {
 					"allowed_ports":  prop("string", "JSON array of allowed port numbers (e.g. \"[80, 443, 8080]\")"),
 					"allow_reboot":   propDefault("boolean", "Allow reboot commands", false),
 					"allow_shutdown": propDefault("boolean", "Allow shutdown commands", false),
+				},
+				"required": []string{"host"},
+			},
+		},
+		{
+			"name":        "devops_app_sync",
+			"description": "Sync app configurations to the remote agent's SQLite DB. Pushes all apps for the given host so the agent can execute self-redeployments without contacting the local machine.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"host": prop("string", "Server hostname or IP"),
+					"name": prop("string", "App name to use for SSH connection (optional, defaults to first app on host)"),
 				},
 				"required": []string{"host"},
 			},

@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -70,27 +68,27 @@ END;
 
 // App represents a deployed application record.
 type App struct {
-	ID               int64
-	Name             string
-	Host             string
-	Port             int
-	User             string
-	Runtime          string
-	ServiceName      string
-	ComposeFile      string
-	RepoURL          string
-	Branch           string
-	DeployDir        string
-	BinaryPath       string
-	HealthCheckURL   string
-	DeployCommands   string
-	Notes            string
-	KeyPath          string
-	LastDeployAt     sql.NullString
-	LastDeployOK     sql.NullInt64
-	LastDeployOutput string
-	CreatedAt        string
-	UpdatedAt        string
+	ID               int64          `json:"id"`
+	Name             string         `json:"name"`
+	Host             string         `json:"host"`
+	Port             int            `json:"port"`
+	User             string         `json:"user"`
+	Runtime          string         `json:"runtime"`
+	ServiceName      string         `json:"service_name"`
+	ComposeFile      string         `json:"compose_file"`
+	RepoURL          string         `json:"repo_url"`
+	Branch           string         `json:"branch"`
+	DeployDir        string         `json:"deploy_dir"`
+	BinaryPath       string         `json:"binary_path"`
+	HealthCheckURL   string         `json:"health_check_url"`
+	DeployCommands   string         `json:"deploy_commands"`
+	Notes            string         `json:"notes"`
+	KeyPath          string         `json:"key_path"`
+	LastDeployAt     sql.NullString `json:"last_deploy_at,omitempty"`
+	LastDeployOK     sql.NullInt64  `json:"last_deploy_ok,omitempty"`
+	LastDeployOutput string         `json:"last_deploy_output,omitempty"`
+	CreatedAt        string         `json:"created_at,omitempty"`
+	UpdatedAt        string         `json:"updated_at,omitempty"`
 }
 
 // store wraps the SQLite database connection.
@@ -428,4 +426,66 @@ func (s *store) removeFilter(host, pattern string) error {
 
 func (s *store) filtersForHost(host string) ([]CommandFilter, error) {
 	return s.listFilters(host)
+}
+
+func (s *store) upsertApp(a *App) error {
+	if err := validateApp(a); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO apps (name, host, port, user, runtime, service_name, compose_file,
+			repo_url, branch, deploy_dir, binary_path, health_check_url, deploy_commands,
+			notes, key_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			host=excluded.host, port=excluded.port, user=excluded.user,
+			runtime=excluded.runtime, service_name=excluded.service_name,
+			compose_file=excluded.compose_file, repo_url=excluded.repo_url,
+			branch=excluded.branch, deploy_dir=excluded.deploy_dir,
+			binary_path=excluded.binary_path, health_check_url=excluded.health_check_url,
+			deploy_commands=excluded.deploy_commands, notes=excluded.notes,
+			key_path=excluded.key_path`,
+		a.Name, a.Host, a.Port, a.User, a.Runtime, a.ServiceName, a.ComposeFile,
+		a.RepoURL, a.Branch, a.DeployDir, a.BinaryPath, a.HealthCheckURL, a.DeployCommands,
+		a.Notes, a.KeyPath,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert app: %w", err)
+	}
+	return nil
+}
+
+func (s *store) deleteAppsNotIn(names []string) (int64, error) {
+	if len(names) == 0 {
+		result, err := s.db.Exec("DELETE FROM apps")
+		if err != nil {
+			return 0, fmt.Errorf("delete all apps: %w", err)
+		}
+		return result.RowsAffected()
+	}
+
+	placeholders := make([]string, len(names))
+	args := make([]any, len(names))
+	for i, n := range names {
+		placeholders[i] = "?"
+		args[i] = n
+	}
+	query := "DELETE FROM apps WHERE name NOT IN (" + joinStrings(placeholders, ",") + ")"
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete stale apps: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+func joinStrings(s []string, sep string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	result := s[0]
+	for _, v := range s[1:] {
+		result += sep + v
+	}
+	return result
 }

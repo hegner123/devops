@@ -1,5 +1,3 @@
-//go:build !agent
-
 package main
 
 import (
@@ -386,5 +384,113 @@ func TestDBPathEnvOverride(t *testing.T) {
 	p := dbPath()
 	if p != want {
 		t.Errorf("dbPath = %q, want %q", p, want)
+	}
+}
+
+func TestUpsertAppNew(t *testing.T) {
+	s := testStore(t)
+	app := testApp()
+
+	if err := s.upsertApp(app); err != nil {
+		t.Fatalf("upsertApp: %v", err)
+	}
+
+	got, err := s.getApp("myapp")
+	if err != nil {
+		t.Fatalf("getApp: %v", err)
+	}
+	if got.Host != "192.168.1.1" {
+		t.Errorf("host = %q, want %q", got.Host, "192.168.1.1")
+	}
+	if got.DeployCommands != `["git pull","docker compose up -d"]` {
+		t.Errorf("deploy_commands = %q, want stored commands", got.DeployCommands)
+	}
+}
+
+func TestUpsertAppUpdate(t *testing.T) {
+	s := testStore(t)
+	app := testApp()
+
+	if err := s.addApp(app); err != nil {
+		t.Fatalf("addApp: %v", err)
+	}
+
+	// Mark a deploy result that should be preserved across upsert
+	if err := s.updateDeployResult("myapp", sql.NullInt64{Int64: 1, Valid: true}, "ok"); err != nil {
+		t.Fatalf("updateDeployResult: %v", err)
+	}
+
+	// Upsert with changed host
+	app.Host = "10.0.0.99"
+	if err := s.upsertApp(app); err != nil {
+		t.Fatalf("upsertApp: %v", err)
+	}
+
+	got, err := s.getApp("myapp")
+	if err != nil {
+		t.Fatalf("getApp: %v", err)
+	}
+	if got.Host != "10.0.0.99" {
+		t.Errorf("host = %q, want %q", got.Host, "10.0.0.99")
+	}
+	// Deploy result should be preserved (upsert only touches config fields)
+	if !got.LastDeployOK.Valid || got.LastDeployOK.Int64 != 1 {
+		t.Errorf("last_deploy_ok = %v, want 1 (should be preserved)", got.LastDeployOK)
+	}
+}
+
+func TestDeleteAppsNotIn(t *testing.T) {
+	s := testStore(t)
+
+	app1 := testApp()
+	app2 := &App{
+		Name:        "app2",
+		Host:        "10.0.0.1",
+		Port:        22,
+		User:        "root",
+		Runtime:     "systemd",
+		ServiceName: "app2",
+		Branch:      "main",
+	}
+	app3 := &App{
+		Name:        "app3",
+		Host:        "10.0.0.1",
+		Port:        22,
+		User:        "root",
+		Runtime:     "systemd",
+		ServiceName: "app3",
+		Branch:      "main",
+	}
+
+	for _, a := range []*App{app1, app2, app3} {
+		if err := s.addApp(a); err != nil {
+			t.Fatalf("addApp %s: %v", a.Name, err)
+		}
+	}
+
+	// Keep app1 and app2, prune app3
+	removed, err := s.deleteAppsNotIn([]string{"myapp", "app2"})
+	if err != nil {
+		t.Fatalf("deleteAppsNotIn: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1", removed)
+	}
+
+	apps, err := s.listApps("")
+	if err != nil {
+		t.Fatalf("listApps: %v", err)
+	}
+	if len(apps) != 2 {
+		t.Errorf("remaining apps = %d, want 2", len(apps))
+	}
+
+	// Delete all when empty names list
+	removed, err = s.deleteAppsNotIn([]string{})
+	if err != nil {
+		t.Fatalf("deleteAppsNotIn empty: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("removed = %d, want 2", removed)
 	}
 }
