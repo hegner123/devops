@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -243,7 +244,15 @@ func TestHealthSSRF(t *testing.T) {
 	})
 }
 
+func skipWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("agent-side tests use Unix paths from t.TempDir()")
+	}
+}
+
 func TestDiscover(t *testing.T) {
+	skipWindows(t)
 	mux := testMux()
 
 	t.Run("empty dir", func(t *testing.T) {
@@ -316,6 +325,7 @@ func TestDiscover(t *testing.T) {
 }
 
 func TestDeploy(t *testing.T) {
+	skipWindows(t)
 	mux := testMux()
 
 	t.Run("success", func(t *testing.T) {
@@ -548,6 +558,7 @@ func TestExecBlocked(t *testing.T) {
 }
 
 func TestDeployBlocked(t *testing.T) {
+	skipWindows(t)
 	mux := testMux()
 	dir := t.TempDir()
 
@@ -760,6 +771,7 @@ func TestRedeployNoCommands(t *testing.T) {
 }
 
 func TestRedeploySuccess(t *testing.T) {
+	skipWindows(t)
 	st := testStore(t)
 	mux := testMuxWithStore(st)
 
@@ -805,6 +817,7 @@ func TestRedeploySuccess(t *testing.T) {
 }
 
 func TestRedeployRetryProtection(t *testing.T) {
+	skipWindows(t)
 	st := testStore(t)
 	mux := testMuxWithStore(st)
 
@@ -844,6 +857,7 @@ func TestRedeployRetryProtection(t *testing.T) {
 }
 
 func TestRedeployRetryExpired(t *testing.T) {
+	skipWindows(t)
 	st := testStore(t)
 	mux := testMuxWithStore(st)
 
