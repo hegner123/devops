@@ -3,4 +3,5 @@ devops-agent
 *.db
 *.db-wal
 *.db-shm
+debug.log
 .claude/

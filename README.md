@@ -13,22 +13,22 @@ Managing a handful of VPS servers means constantly switching between SSH session
 
 ## How it works
 
-Two binaries, one codebase:
+Single binary, two modes:
 
 ```
 ┌─────────────────────┐          SSH          ┌─────────────────────┐
 │   Your machine      │   ──────────────────▶  │   Linux VPS         │
 │                     │                        │                     │
-│  Claude ◀──▶ devops │   SSH channel fwd      │  devops-agent       │
+│  Claude ◀──▶ devops │   SSH channel fwd      │  devops agent       │
 │         (MCP stdio) │   ──────────────────▶  │  (unix socket HTTP) │
 │                     │                        │                     │
 │  SQLite (metadata)  │                        │  systemd / docker   │
 └─────────────────────┘                        └─────────────────────┘
 ```
 
-**Local binary (`devops`)** runs on your machine as an MCP server. It stores app metadata in SQLite and maintains a pool of persistent SSH connections to your servers.
+**MCP mode (`devops`)** is the default. It runs on your machine as an MCP server, stores app metadata in SQLite, and maintains a pool of persistent SSH connections to your servers.
 
-**Remote agent (`devops-agent`)** runs on each VPS as a systemd service. It accepts HTTP requests over a Unix socket and executes operations (service management, deployments, log retrieval, arbitrary commands).
+**Agent mode (`devops agent`)** runs on each VPS as a systemd service. It accepts HTTP requests over a Unix socket and executes operations (service management, deployments, log retrieval, arbitrary commands).
 
 Communication flows through SSH channel forwarding -- the local binary dials the Unix socket through the SSH connection. No extra ports, no API tokens, no TLS certificates to manage.
 
@@ -69,11 +69,11 @@ Blocked commands return HTTP 403. The filter uses case-insensitive `strings.Cont
 
 ### Minimal agent surface
 
-The agent exposes exactly 8 HTTP endpoints: `/ping`, `/filters`, `/exec`, `/service`, `/logs`, `/health`, `/discover`, `/deploy`. Each endpoint validates its input and scopes its operations.
+The agent exposes exactly 10 HTTP endpoints: `/ping`, `/filters`, `/exec`, `/service`, `/logs`, `/health`, `/discover`, `/deploy`, `/sync-apps`, and `/redeploy`. Each endpoint validates its input and scopes its operations.
 
 ### Input validation
 
-Both binaries validate all inputs: hostnames, service names, ports, paths, and runtimes are checked against strict allow-lists before any operation executes.
+Both modes validate all inputs: hostnames, service names, ports, paths, and runtimes are checked against strict allow-lists before any operation executes.
 
 ## Installation
 
@@ -89,10 +89,10 @@ Both binaries validate all inputs: hostnames, service names, ports, paths, and r
 git clone https://github.com/hegner123/devops.git
 cd devops
 
-# Build both binaries
+# Build the binary
 just build
 
-# Install the local MCP binary to your PATH
+# Install to your PATH
 just install
 ```
 
@@ -102,8 +102,8 @@ Manual build without `just`:
 # Local MCP binary (runs on your machine)
 go build -o devops .
 
-# Remote agent (runs on your Linux servers)
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags agent -o devops-agent .
+# Remote agent (same binary, cross-compiled for Linux)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o devops-linux-amd64 .
 
 # Install
 cp devops /usr/local/bin/devops
@@ -124,7 +124,7 @@ Point `devops` at a fresh VPS. It will install the agent, harden SSH, configure 
 ```
 You: "Bootstrap my server at 203.0.113.10"
 Claude: calls devops_bootstrap with host=203.0.113.10
-→ installed 0.2.0, server configured
+→ installed 0.2.8, server configured
 ```
 
 For subsequent runs, bootstrap detects the existing agent and upgrades it if a newer version is available.
@@ -184,6 +184,7 @@ Once registered, you manage apps by name:
 | `devops_filter_list` | List custom command filters, optionally by host |
 | `devops_filter_remove` | Remove a custom command filter |
 | `devops_filter_sync` | Sync filters and port/reboot/shutdown settings to the remote agent |
+| `devops_app_sync` | Push app configs from local DB to the remote agent for self-redeploy |
 
 ## App configuration
 
@@ -236,10 +237,9 @@ Override with the `DEVOPS_DB_PATH` environment variable.
 ## Development
 
 ```bash
-just test           # Run local binary tests
-just test-agent     # Run agent binary tests
-just build          # Build both binaries
-just clean          # Remove built binaries
+just test           # Run all tests
+just build          # Build the binary
+just clean          # Remove built binary
 ```
 
 Tests use in-memory SQLite and a mock agent (Unix socket httptest server). No real SSH connections or remote hosts needed.
