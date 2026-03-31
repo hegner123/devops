@@ -124,7 +124,7 @@ Point `devops` at a fresh VPS. It will install the agent, harden SSH, configure 
 ```
 You: "Bootstrap my server at 203.0.113.10"
 Claude: calls devops_bootstrap with host=203.0.113.10
-→ installed 0.2.8, server configured
+→ installed 0.2.9, server configured
 ```
 
 For subsequent runs, bootstrap detects the existing agent and upgrades it if a newer version is available.
